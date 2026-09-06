@@ -1,0 +1,48 @@
+name: Deploy to server
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Stop any previous service on port 8765
+        run: |
+          set -e
+          echo "Stopping containers publishing 8765..."
+          for cid in $(docker ps -q); do
+            if docker port "$cid" 2>/dev/null | grep -q ':8765->'; then
+              docker stop "$cid"
+            fi
+          done
+          docker rm -f astra-trading-app 2>/dev/null || true
+
+          echo "Stopping any bare process still listening on 8765..."
+          pids=$(ss -ltnp 2>/dev/null | awk '/:8765 /{print $0}' | grep -oP 'pid=\K[0-9]+' | sort -u)
+          if [ -n "$pids" ]; then
+            echo "$pids" | xargs -r kill
+            sleep 2
+            echo "$pids" | xargs -r kill -9 2>/dev/null || true
+          fi
+
+      - name: Build and start new stack
+        run: |
+          docker compose up -d --build
+
+      - name: Health check
+        run: |
+          for i in $(seq 1 15); do
+            if curl -fsS http://127.0.0.1:8765/api/paper/snapshot >/dev/null; then
+              echo "Service is up"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Service did not become healthy in time"
+          docker logs astra-trading-app --tail 100 || true
+          exit 1

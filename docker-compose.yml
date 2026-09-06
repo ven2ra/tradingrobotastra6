@@ -1,0 +1,11 @@
+services:
+  app:
+    build: .
+    image: astra-trading-app:latest
+    container_name: astra-trading-app
+    restart: unless-stopped
+    ports:
+      - "8765:8765"
+    env_file:
+      - path: .env
+        required: false

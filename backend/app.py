@@ -1,9 +1,11 @@
 """Read-only monitor API; backend lifespan owns the paper tick loop."""
 import asyncio
+import os
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timezone
 from decimal import Decimal as D
 from fastapi import FastAPI, HTTPException
+from fastapi.staticfiles import StaticFiles
 from engine import Config, Engine, Grid, RiskPolicy, Tick
 from tinvest import Observer
 
@@ -57,3 +59,7 @@ async def market_journal(): return app.state.observer.journal
 @app.post('/api/live/arm')
 def live_disabled():
     raise HTTPException(409, 'Live adapter is not installed; paper reference cannot be armed')
+
+_static_dir = os.path.join(os.path.dirname(__file__), 'static')
+if os.path.isdir(_static_dir):
+    app.mount('/', StaticFiles(directory=_static_dir, html=True), name='static')
