@@ -1,16 +1,27 @@
 """T-Invest market data and observational decisions. No account/order methods."""
 import asyncio
 import os
+import ssl
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal as D
 from pathlib import Path
 
+import certifi
 import httpx
 from dotenv import load_dotenv
 from engine import Config, Grid, MeanReversion, Stop, Tick, Trend, MSK
 
 ROOT = Path(__file__).resolve().parents[1]
 BASE = 'https://invest-public-api.tbank.ru/rest/tinkoff.public.invest.api.contract.v1.'
+RUSSIAN_ROOT_CA = Path(__file__).resolve().parent / 'certs' / 'russian_trusted_root_ca.pem'
+
+def _ssl_context():
+    # invest-public-api.tbank.ru serves a chain rooted at the Russian Trusted
+    # Sub CA (Минцифры), which is absent from certifi's public trust store.
+    ctx = ssl.create_default_context(cafile=certifi.where())
+    if RUSSIAN_ROOT_CA.is_file():
+        ctx.load_verify_locations(cafile=str(RUSSIAN_ROOT_CA))
+    return ctx
 ALLOWED_METHODS = {
     ('InstrumentsService', 'GetInstrumentBy'), ('InstrumentsService', 'BondBy'),
     ('MarketDataService', 'GetLastPrices'), ('MarketDataService', 'GetOrderBook'),
@@ -76,7 +87,7 @@ class MarketDataError(Exception): pass
 class TInvest:
     def __init__(self, token, transport=None):
         self.client = httpx.AsyncClient(headers={'Authorization': f'Bearer {token}'}, timeout=15,
-                                       follow_redirects=False, transport=transport)
+                                       follow_redirects=False, transport=transport, verify=_ssl_context())
 
     async def call(self, service, method, body):
         if (service, method) not in ALLOWED_METHODS:
