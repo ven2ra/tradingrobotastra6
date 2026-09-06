@@ -1331,7 +1331,20 @@ export default function App() {
                       <span>Открытые позиции</span>
                       <b>{m.positions.length}</b>
                     </div>
+                    <div>
+                      <span>Результат за день</span>
+                      <b>
+                        <Pnl value={m.status === "loading" ? null : m.pnl} />
+                      </b>
+                    </div>
                   </div>
+                  {!m.positions.length && (
+                    <div className="notice mt-3 mb-5">
+                      Открытых позиций нет, поэтому по отдельным бумагам
+                      нечего показывать в плюсе или минусе. Общий результат за
+                      день — «Результат за день» выше и на странице «Обзор».
+                    </div>
+                  )}
                   <Panel
                     title="Позиции"
                     action={
