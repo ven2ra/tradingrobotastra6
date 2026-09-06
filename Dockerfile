@@ -11,6 +11,7 @@ WORKDIR /app
 COPY backend/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 COPY backend/ ./
+COPY schemas/ ./schemas/
 COPY --from=frontend /app/frontend/dist ./static
 EXPOSE 8765
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8765"]

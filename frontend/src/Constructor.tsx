@@ -8,6 +8,7 @@ import {
   Check,
   AlertCircle,
   CircleHelp,
+  Zap,
 } from "lucide-react";
 import strategySchema from "../../schemas/strategy.schema.json";
 import riskSchema from "../../schemas/risk-policy.schema.json";
@@ -457,6 +458,7 @@ export function readDrafts(): Draft[] {
     return [];
   }
 }
+const EXECUTABLE_KINDS: Kind[] = ["Grid", "Trend", "MeanReversion", "BondSpread"];
 export function Constructor({
   kind,
   existing,
@@ -471,13 +473,47 @@ export function Constructor({
   const [draft, setDraft] = useState<Draft>(() => existing ?? makeDraft(kind));
   const [errors, setErrors] = useState<string[]>([]);
   const [checked, setChecked] = useState(false);
+  const [activation, setActivation] = useState<{
+    status: "idle" | "pending" | "ok" | "error";
+    message: string;
+  }>({ status: "idle", message: "" });
   const set = (key: string, value: any) => {
     setDraft((d) => ({ ...d, [key]: value }));
     setChecked(false);
     setErrors([]);
+    setActivation({ status: "idle", message: "" });
   };
   const b = branch(draft.kind);
   const overlay = draft.kind === "Event" || draft.kind === "RiskOff";
+  const executable = EXECUTABLE_KINDS.includes(draft.kind as Kind);
+  async function activate() {
+    if (!check()) return;
+    setActivation({ status: "pending", message: "" });
+    try {
+      const res = await fetch("/api/paper/strategies", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(draft),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setActivation({
+          status: "error",
+          message: body.detail || `Ошибка активации (HTTP ${res.status})`,
+        });
+        return;
+      }
+      setActivation({
+        status: "ok",
+        message: `Активирована в paper-движке на: ${(body.instrument_ids ?? []).join(", ")}`,
+      });
+    } catch {
+      setActivation({
+        status: "error",
+        message: "Не удалось связаться с Paper API. Проверьте, что backend запущен.",
+      });
+    }
+  }
   function check() {
     const ok = validate(draft);
     const e = ok
@@ -842,13 +878,15 @@ export function Constructor({
             </div>
           ))}
           <div className="notice mt-5">
-            Черновик хранится в этом браузере. Сохранение не запускает стратегию
-            и не выставляет заявки.
+            «Сохранить черновик» пишет только в этот браузер и не запускает
+            стратегию. «Активировать в Paper» отправляет профиль в реальный
+            paper-движок backend — он начнёт получать тики и генерировать
+            решения.
           </div>
           <p className="mt-4">
-            Полная активация профилей пока не поддерживается paper-движком.
-            Перед подключением он должен проверить стоп, инструменты и доступные
-            функции.
+            {executable
+              ? "Заявки остаются виртуальными: PaperBroker не подключён к брокеру и реальным деньгам."
+              : "Backend пока не исполняет этот класс стратегии — активация вернёт понятную ошибку вместо запуска."}
           </p>
         </aside>
       </div>
@@ -868,6 +906,16 @@ export function Constructor({
           проверка исполнимости сделки.
         </div>
       )}
+      {activation.status === "ok" && (
+        <div role="status" className="notice success mt-4">
+          <Check size={17} /> {activation.message}
+        </div>
+      )}
+      {activation.status === "error" && (
+        <div role="alert" className="notice error mt-4">
+          <AlertCircle size={17} /> {activation.message}
+        </div>
+      )}
       <div className="builder-actions">
         <button className="secondary" onClick={check}>
           <ShieldCheck size={16} /> Проверить профиль
@@ -885,12 +933,29 @@ export function Constructor({
           <Download size={16} /> JSON
         </button>
         <button
-          className="primary"
+          className="secondary"
           onClick={() => {
             if (check()) onSave(draft);
           }}
         >
           <Save size={16} /> Сохранить черновик
+        </button>
+        <button
+          className="primary"
+          disabled={overlay || activation.status === "pending"}
+          title={
+            overlay
+              ? "Event и RiskOff — надстройки риск-политики, а не отдельная торгуемая стратегия"
+              : !executable
+                ? "Движок пока не исполняет этот класс — активация вернёт ошибку с объяснением"
+                : undefined
+          }
+          onClick={activate}
+        >
+          <Zap size={16} />{" "}
+          {activation.status === "pending"
+            ? "Активация…"
+            : "Активировать в Paper"}
         </button>
       </div>
     </div>

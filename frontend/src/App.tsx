@@ -75,7 +75,7 @@ const pageGuides: Record<Page, string> = {
   portfolio:
     "Открытые позиции, свободные деньги и текущие заявки по выбранному источнику данных.",
   strategies:
-    "Разные режимы рынка — разные правила исполнения. Соберите профиль из каталога и сохраните черновик; активация в бою этим движком не поддерживается.",
+    "Разные режимы рынка — разные правила исполнения. Соберите профиль из каталога: Grid, Trend-follow, Mean reversion и Bonds carry можно активировать в paper-движке, остальные пока только сохраняются черновиком.",
   regimes:
     "Как рынок классифицируется по режимам и какие тикеры сейчас в каком режиме — от этого зависит, каким стратегиям разрешён вход.",
   risk: "Единые лимиты риска: проверяются перед каждой заявкой независимо от стратегии — дневной стоп, размер позиции, недельная просадка.",
@@ -938,6 +938,31 @@ export default function App() {
     const id = setInterval(() => setClock(new Date()), 1000);
     return () => clearInterval(id);
   }, []);
+  const [activeStrategyIds, setActiveStrategyIds] = useState<Set<string>>(
+    new Set(),
+  );
+  useEffect(() => {
+    let active = true;
+    async function poll() {
+      try {
+        const res = await fetch("/api/paper/strategies");
+        if (res.ok && active) {
+          const list = await res.json();
+          setActiveStrategyIds(
+            new Set(list.map((s: { id: string }) => s.id)),
+          );
+        }
+      } catch {
+        // Paper API unreachable; keep the last known activation state.
+      }
+    }
+    void poll();
+    const id = setInterval(poll, 5000);
+    return () => {
+      active = false;
+      clearInterval(id);
+    };
+  }, []);
   useEffect(() => {
     const f = () => {
       const p = location.hash.slice(1);
@@ -1166,9 +1191,10 @@ export default function App() {
                 <b>ASTRA · монитор стратегий MOEX</b>
                 <p>
                   Ордера создаёт backend после RiskEngine. UI показывает
-                  решения. Конструктор и политика риска сохраняют локальные
-                  черновики. Live недоступен. Не является ИИР; возможна потеря
-                  капитала.
+                  решения. Конструктор может активировать Grid, Trend-follow,
+                  Mean reversion и Bonds carry в paper-движке; политика риска
+                  пока сохраняет только локальные черновики. Live недоступен.
+                  Не является ИИР; возможна потеря капитала.
                 </p>
               </div>
               <button
@@ -1309,8 +1335,12 @@ export default function App() {
                                 {d.priority}
                               </small>
                             </div>
-                            <span className="badge muted-badge">
-                              Не активирован
+                            <span
+                              className={`badge ${activeStrategyIds.has(d.id) ? "active-badge" : "muted-badge"}`}
+                            >
+                              {activeStrategyIds.has(d.id)
+                                ? "Активна в Paper"
+                                : "Не активирована"}
                             </span>
                             <button
                               className="secondary"

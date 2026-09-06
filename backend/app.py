@@ -1,15 +1,68 @@
 """Read-only monitor API; backend lifespan owns the paper tick loop."""
 import asyncio
+import json
 import os
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timezone
 from decimal import Decimal as D, ROUND_HALF_UP
+from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
-from engine import Config, Engine, Grid, RiskPolicy, Tick
+from jsonschema import Draft202012Validator
+from engine import BondSpread, Config, Engine, Grid, MeanReversion, RiskPolicy, Stop, Tick, Trend
 from tinvest import Observer
 
 engine = Engine(RiskPolicy(), {'SBER': [Grid(Config('grid-sber', 'Grid', frozenset({'FLAT'})))]})
+active_strategies = {'grid-sber': {'id': 'grid-sber', 'kind': 'Grid', 'instrument_ids': ['SBER'],
+                                    'priority': 100, 'enabled': True, 'built_in': True}}
+
+# Same flattening pattern as backend/certs -> /app/certs in the Docker image;
+# falls back to the repo-root layout used when running from a source checkout.
+def _schemas_dir():
+    here = Path(__file__).resolve().parent
+    for candidate in (here / 'schemas', here.parent / 'schemas'):
+        if candidate.is_dir(): return candidate
+    raise FileNotFoundError('schemas directory not found')
+
+_strategy_schema = json.loads((_schemas_dir() / 'strategy.schema.json').read_text(encoding='utf-8'))
+_strategy_validator = Draft202012Validator(_strategy_schema)
+SUPPORTED_PLUGINS = {'Grid': Grid, 'Trend': Trend, 'MeanReversion': MeanReversion, 'BondSpread': BondSpread}
+
+def detach_strategy(strategy_id):
+    for ticker in list(engine.plugins):
+        engine.plugins[ticker] = [p for p in engine.plugins[ticker] if p.config.id != strategy_id]
+        if not engine.plugins[ticker]: del engine.plugins[ticker]
+    active_strategies.pop(strategy_id, None)
+
+def activate_strategy(draft):
+    errors = sorted(_strategy_validator.iter_errors(draft), key=lambda e: list(e.path))
+    if errors:
+        raise HTTPException(422, f'Профиль не прошёл проверку схемы ({errors[0].json_path}): {errors[0].message}')
+    kind = draft['kind']
+    plugin_cls = SUPPORTED_PLUGINS.get(kind)
+    if plugin_cls is None:
+        raise HTTPException(501, f'Класс стратегии {kind} пока не исполняется paper-движком '
+                                  '(запускаются только Grid, Trend, MeanReversion и BondSpread)')
+    try:
+        s = draft['stop']
+        stop = Stop(mode=s['mode'], value=D(str(s['value'])),
+                    initial_pct=D(str(s.get('initial_pct', 2))), activation_pct=D(str(s.get('activation_pct', 1))),
+                    breakeven_pct=D(str(s['breakeven_pct'])) if s.get('breakeven_pct') is not None else None,
+                    yield_bps=D(str(s['yield_bps'])) if s.get('yield_bps') is not None else None)
+        tp = tuple((D(str(x['target_pct'])), D(str(x['share_pct']))) for x in draft['tp'])
+        config = Config(id=draft['id'], kind=kind, regimes=frozenset(draft['regimes']),
+                         priority=int(draft['priority']), lots=int(draft['lots']), max_lots=int(draft['max_lots']),
+                         short=bool(draft['short']), stop=stop, tp=tp, params=draft.get('params', {}))
+    except (KeyError, ValueError, TypeError, ArithmeticError) as exc:
+        raise HTTPException(422, f'Некорректный профиль стратегии: {exc}') from None
+    detach_strategy(draft['id'])
+    plugin = plugin_cls(config)
+    tickers = sorted({ident.split(':')[0] for ident in draft['instrument_ids']})
+    for ticker in tickers:
+        engine.plugins.setdefault(ticker, []).append(plugin)
+    active_strategies[draft['id']] = {'id': draft['id'], 'kind': kind, 'instrument_ids': tickers,
+                                       'priority': config.priority, 'enabled': True}
+    return active_strategies[draft['id']]
 
 def health_score(state, policy):
     # A read-only discipline gauge for the UI; never used by RiskEngine to gate orders.
@@ -43,7 +96,9 @@ async def loop():
     while True:
         regime, price = [('FLAT', '98'), ('UPTREND', '101'), ('SHOCK', '95'), ('LOW_LIQUIDITY', '95')][n % 4]
         px = D(price)
-        engine.tick(Tick('SBER', regime, px, px, px + D('.01'), datetime.now(timezone.utc), lot_size=10))
+        now = datetime.now(timezone.utc)
+        for ticker in list(engine.plugins):
+            engine.tick(Tick(ticker, regime, px, px, px + D('.01'), now, lot_size=10))
         n += 1
         await asyncio.sleep(2)
 
@@ -77,6 +132,21 @@ async def snapshot():
 
 @app.get('/api/paper/journal')
 async def journal(): return engine.state.journal[-500:]
+
+@app.get('/api/paper/strategies')
+async def list_strategies(): return list(active_strategies.values())
+
+@app.post('/api/paper/strategies', status_code=201)
+async def create_strategy(draft: dict): return activate_strategy(draft)
+
+@app.delete('/api/paper/strategies/{strategy_id}')
+async def remove_strategy(strategy_id: str):
+    if strategy_id not in active_strategies:
+        raise HTTPException(404, 'Стратегия не найдена')
+    if active_strategies[strategy_id].get('built_in'):
+        raise HTTPException(403, 'Встроенную стратегию по умолчанию нельзя удалить')
+    detach_strategy(strategy_id)
+    return {'removed': strategy_id}
 
 @app.get('/api/t-invest/snapshot')
 async def market_snapshot(): return app.state.observer.snapshot()
