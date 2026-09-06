@@ -902,9 +902,17 @@ function LiveDialog({ close }: { close: () => void }) {
   const [step, setStep] = useState(1);
   const [ack, setAck] = useState(false);
   const [systemEnabled, setSystemEnabled] = useState<boolean | null>(null);
-  const [myToken, setMyToken] = useState(
+  // tokenInput is just the text box value as the user types it. activeToken
+  // is the committed value actually used for requests — it only changes on
+  // blur/mount, never per keystroke. Without this split, an effect keyed on
+  // every keystroke would fire one fetch per character typed, and those
+  // requests can resolve out of order, letting a stale partial-token error
+  // overwrite the real result for the finished token (the bug behind
+  // "ввёл токен, но счёт не появился").
+  const [tokenInput, setTokenInput] = useState(
     () => localStorage.getItem(MY_TOKEN_KEY) || "",
   );
+  const [activeToken, setActiveToken] = useState(tokenInput);
   const [account, setAccount] = useState<LiveAccountInfo | null>(null);
   const [proposals, setProposals] = useState<LiveProposal[] | null>(null);
   const [dismissed, setDismissed] = useState<string[]>(loadDismissed);
@@ -912,6 +920,7 @@ function LiveDialog({ close }: { close: () => void }) {
   const [message, setMessage] = useState<{ text: string; ok: boolean } | null>(
     null,
   );
+  const accountRequestId = useRef(0);
   useEffect(() => {
     dialog.current?.showModal();
   }, []);
@@ -922,17 +931,24 @@ function LiveDialog({ close }: { close: () => void }) {
       .catch(() => setSystemEnabled(null));
   }, []);
   function tokenHeaders(): Record<string, string> {
-    return myToken ? { "X-Live-Token": myToken } : {};
+    return activeToken ? { "X-Live-Token": activeToken } : {};
   }
   function loadAccount() {
-    if (!myToken) {
+    if (!activeToken) {
       setAccount(null);
       return;
     }
+    const requestId = ++accountRequestId.current;
     fetch("/api/live/account", { headers: tokenHeaders() })
       .then((r) => r.json())
-      .then(setAccount)
-      .catch(() => setAccount({ configured: false, error: "Нет связи с backend" }));
+      .then((d) => {
+        if (requestId === accountRequestId.current) setAccount(d);
+      })
+      .catch(() => {
+        if (requestId === accountRequestId.current) {
+          setAccount({ configured: false, error: "Нет связи с backend" });
+        }
+      });
   }
   function loadProposals() {
     fetch("/api/live/orders", { headers: tokenHeaders() })
@@ -949,11 +965,12 @@ function LiveDialog({ close }: { close: () => void }) {
     const id = setInterval(loadProposals, 5000);
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [step, myToken]);
-  function saveToken() {
-    localStorage.setItem(MY_TOKEN_KEY, myToken.trim());
-    setMyToken(myToken.trim());
-    loadAccount();
+  }, [step, activeToken]);
+  function commitToken() {
+    const trimmed = tokenInput.trim();
+    localStorage.setItem(MY_TOKEN_KEY, trimmed);
+    setTokenInput(trimmed);
+    setActiveToken(trimmed);
   }
   function dismiss(id: string) {
     const next = [...dismissed, id];
@@ -961,7 +978,7 @@ function LiveDialog({ close }: { close: () => void }) {
     localStorage.setItem(DISMISSED_KEY, JSON.stringify(next));
   }
   async function approve(id: string) {
-    if (!myToken) {
+    if (!activeToken) {
       setMessage({ text: "Сначала укажите свой токен T-Invest.", ok: false });
       return;
     }
@@ -986,7 +1003,7 @@ function LiveDialog({ close }: { close: () => void }) {
     }
   }
   async function killSwitch() {
-    if (!myToken) {
+    if (!activeToken) {
       setMessage({ text: "Сначала укажите свой токен T-Invest.", ok: false });
       return;
     }
@@ -1060,7 +1077,7 @@ function LiveDialog({ close }: { close: () => void }) {
               ниже всё равно позволяет посмотреть счёт.
             </div>
           )}
-          <label className="field span-2 mb-4">
+          <label className="field span-2 mb-2">
             Ваш токен T-Invest{" "}
             <span className="small muted">
               · нужен доступ к счёту и торговле; хранится только в этом
@@ -1068,15 +1085,21 @@ function LiveDialog({ close }: { close: () => void }) {
             </span>
             <input
               type="password"
-              value={myToken}
-              onChange={(e) => setMyToken(e.target.value)}
-              onBlur={saveToken}
+              value={tokenInput}
+              onChange={(e) => setTokenInput(e.target.value)}
+              onBlur={commitToken}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") commitToken();
+              }}
               placeholder="t.…"
               autoComplete="off"
             />
           </label>
-          {!myToken ? (
-            <p className="small muted">Введите токен, чтобы увидеть счёт и предложения.</p>
+          <button className="secondary w-full mb-4" onClick={commitToken}>
+            Показать счёт
+          </button>
+          {!activeToken ? (
+            <p className="small muted">Введите токен и нажмите «Показать счёт».</p>
           ) : !account ? (
             <p>Запрашиваем данные счёта…</p>
           ) : !account.configured ? (
@@ -1154,7 +1177,7 @@ function LiveDialog({ close }: { close: () => void }) {
                           <div className="flex gap-2">
                             <button
                               className="primary"
-                              disabled={busy === p.id || !myToken}
+                              disabled={busy === p.id || !activeToken}
                               onClick={() => approve(p.id)}
                             >
                               Отправить
@@ -1185,7 +1208,7 @@ function LiveDialog({ close }: { close: () => void }) {
           )}
           <button
             className="secondary w-full mt-4"
-            disabled={busy === "kill" || !myToken}
+            disabled={busy === "kill" || !activeToken}
             onClick={killSwitch}
           >
             <LockKeyhole size={14} /> Отменить мои заявки (kill-switch)
