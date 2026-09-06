@@ -3,6 +3,7 @@ WORKDIR /app/frontend
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
 COPY frontend/ ./
+COPY schemas/ /app/schemas/
 RUN npm run build
 
 FROM python:3.11-slim
