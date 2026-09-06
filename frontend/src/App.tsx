@@ -982,12 +982,13 @@ function LiveDialog({ close }: { close: () => void }) {
             </>
           )}
           <div className="notice mt-4">
-            Выставление реальных заявок (OrdersService) не реализовано —
-            только чтение счёта. Кнопка ниже обращается к серверу и покажет
-            настоящий отказ, а не заглушку.
+            Реальные заявки технически возможны, но только вручную:
+            администратор взводит Live и по отдельности подтверждает каждое
+            предложение в «Настройки → Live». Кнопка ниже лишь показывает
+            текущее состояние взвода — включить Live из неё нельзя.
           </div>
           <button className="secondary w-full mt-3" onClick={tryArm}>
-            Проверить активацию
+            Проверить состояние
           </button>
           {armResult && <p className="small muted mt-2">{armResult}</p>}
           <button className="primary w-full mt-5" onClick={close}>
