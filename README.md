@@ -1,0 +1,1 @@
+# tradingrobotastra6
