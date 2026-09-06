@@ -53,13 +53,23 @@ async def lifespan(app):
     observer = Observer()
     app.state.observer = observer
     market_task = asyncio.create_task(observer.run())
-    yield
-    task.cancel()
-    market_task.cancel()
-    with suppress(asyncio.CancelledError): await task
-    with suppress(asyncio.CancelledError): await market_task
+    app.state.market_task = market_task
+    try:
+        yield
+    finally:
+        task.cancel()
+        market_task.cancel()
+        with suppress(asyncio.CancelledError): await task
+        with suppress(asyncio.CancelledError): await market_task
 
 app = FastAPI(title='MOEX Multi-strategy Paper Reference', lifespan=lifespan)
+
+@app.get('/api/health')
+async def health():
+    observer = app.state.observer
+    return {'status':'ok' if not app.state.market_task.done() else 'degraded',
+            'market_data':observer.status, 'last_success':observer.updated,
+            'execution':'paper-only', 'live_enabled':False}
 
 @app.get('/api/paper/snapshot')
 async def snapshot():

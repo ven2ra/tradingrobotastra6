@@ -1,9 +1,11 @@
 """Run with fastapi, httpx and jsonschema installed."""
 import copy
 import json
+import os
 from pathlib import Path
 from fastapi.testclient import TestClient
 from jsonschema import Draft202012Validator, ValidationError
+os.environ['T_INVEST_TOKEN'] = ''  # Contract tests must never call the real broker.
 from app import app
 
 root = Path(__file__).resolve().parents[1] / 'schemas'
@@ -30,5 +32,7 @@ with TestClient(app) as client:
     assert snapshot.json()['mode'] == 'PAPER'
     assert client.get('/api/paper/journal').status_code == 200
     assert client.post('/api/live/arm').status_code == 409
+    assert client.get('/api/health').json()['live_enabled'] is False
+    assert client.get('/api/t-invest/snapshot').json()['configured'] is False
     assert client.post('/api/paper/orders').status_code == 404
 print('Schema validation, forbidden Grid regime and FastAPI lifecycle/API checks passed')

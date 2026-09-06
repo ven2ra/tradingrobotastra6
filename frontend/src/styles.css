@@ -1005,6 +1005,12 @@ th:last-child {
   font-size: 9px;
   color: #a497b5;
 }
+.market-reason {
+  white-space: normal;
+  min-width: 190px;
+  max-width: 370px;
+  line-height: 1.6;
+}
 .action {
   font-size: 8px;
   letter-spacing: 0.25px;
@@ -1183,6 +1189,7 @@ th:last-child {
   gap: 18px;
 }
 .field {
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -1353,6 +1360,7 @@ input[type="checkbox"] {
 }
 .tp-row .field {
   flex: 1;
+  min-width: 0;
 }
 .step-number {
   height: 24px;

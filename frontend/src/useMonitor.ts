@@ -19,6 +19,7 @@ export interface Health {
   turnoverUsedPct: number;
 }
 export interface Monitor {
+  origin?: Source;
   equity: number;
   cash: number;
   pnl: number;
@@ -107,7 +108,7 @@ export function useMonitor(source: Source) {
     let active = true;
     let timer: ReturnType<typeof setTimeout>;
     let controller: AbortController;
-    setPaper({ ...empty });
+    setPaper({ ...empty, origin: source });
     async function poll() {
       controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 5000);
@@ -135,6 +136,8 @@ export function useMonitor(source: Source) {
               name: String(m.name ?? ticker),
               kind: m.kind === "bond" ? "bond" : "stock",
               price: Number(m.price),
+              quoteTime: typeof m.time === "string" ? m.time : undefined,
+              stale: m.stale === true,
               change: null,
               regime: String(m.regime) as Regime,
               color: "#b8a1ff",
@@ -170,6 +173,7 @@ export function useMonitor(source: Source) {
         if (active)
           setPaper((old) => ({
             ...old,
+            origin: source,
             equity: Number(s.equity_rub),
             cash: Number(s.cash_rub),
             pnl: Number(s.day_pnl_rub),
@@ -192,9 +196,26 @@ export function useMonitor(source: Source) {
                   turnoverUsedPct: Number(s.health.turnover_used_pct),
                 }
               : null,
-            updated: source === "t-invest" ? (s.updated ? Date.parse(s.updated) : null) : Date.now(),
-            status: source === "t-invest" && !["connected","partial"].includes(s.status) ? (s.status === "loading" ? "loading" : "offline") : "connected",
-            error: source === "t-invest" ? (s.error || (s.status === "not_configured" ? "Токен не настроен в серверном .env" : "")) : "",
+            updated:
+              source === "t-invest"
+                ? s.updated
+                  ? Date.parse(s.updated)
+                  : null
+                : Date.now(),
+            status:
+              source === "t-invest" &&
+              !["connected", "partial"].includes(s.status)
+                ? s.status === "loading"
+                  ? "loading"
+                  : "offline"
+                : "connected",
+            error:
+              source === "t-invest"
+                ? s.error ||
+                  (s.status === "not_configured"
+                    ? "Токен не настроен в серверном .env"
+                    : "")
+                : "",
             history: [
               ...old.history,
               {
@@ -213,6 +234,11 @@ export function useMonitor(source: Source) {
           setPaper((old) => ({
             ...old,
             status: "offline",
+            instruments: old.instruments.map((a) => ({
+              ...a,
+              regime: "UNDEFINED",
+              stale: true,
+            })),
             error: e instanceof Error ? e.message : "Нет соединения",
           }));
       } finally {
@@ -227,5 +253,5 @@ export function useMonitor(source: Source) {
       controller?.abort();
     };
   }, [source]);
-  return source === "demo" ? demo : paper;
+  return source === "demo" ? demo : paper.origin === source ? paper : empty;
 }

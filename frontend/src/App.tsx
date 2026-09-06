@@ -52,11 +52,16 @@ import { useMonitor, type Monitor, type Source } from "./useMonitor";
 
 const regimeExplanations: Record<Regime, string> = {
   FLAT: "Цена колеблется в диапазоне без выраженного тренда. Разрешены Grid, Mean reversion и другие диапазонные стратегии.",
-  UPTREND: "Устойчивое движение цены вверх, подтверждённое трендовыми индикаторами. Разрешены Trend-follow, Breakout и Momentum.",
-  DOWNTREND: "Устойчивое движение цены вниз. Новые лонги обычно запрещены; актуальны шорт-стратегии и защита позиций.",
-  SHOCK: "Резкий аномальный скачок цены или волатильности. Новые входы запрещены всем стратегиям, работает только Risk-off.",
-  LOW_LIQUIDITY: "Недостаточный объём торгов или ширина спреда. Любые новые сделки запрещены до восстановления ликвидности.",
-  UNDEFINED: "Недостаточно данных, чтобы классифицировать рынок. Новые сделки запрещены до появления надёжного сигнала.",
+  UPTREND:
+    "Устойчивое движение цены вверх, подтверждённое трендовыми индикаторами. Разрешены Trend-follow, Breakout и Momentum.",
+  DOWNTREND:
+    "Устойчивое движение цены вниз. Новые лонги обычно запрещены; актуальны шорт-стратегии и защита позиций.",
+  SHOCK:
+    "Резкий аномальный скачок цены или волатильности. Новые входы запрещены всем стратегиям, работает только Risk-off.",
+  LOW_LIQUIDITY:
+    "Недостаточный объём торгов или ширина спреда. Любые новые сделки запрещены до восстановления ликвидности.",
+  UNDEFINED:
+    "Недостаточно данных, чтобы классифицировать рынок. Новые сделки запрещены до появления надёжного сигнала.",
 };
 const pages = [
   { id: "overview", title: "Обзор", icon: LayoutDashboard },
@@ -286,7 +291,7 @@ function Journal({
             onChange={(e) => setFilter(e.target.value)}
           >
             <option value="ALL">Все действия</option>
-            {["HOLD", "REJECT", "SUBMIT", "FILL", "CANCEL"].map((a) => (
+            {["HOLD", "SIGNAL", "REJECT", "SUBMIT", "FILL", "CANCEL"].map((a) => (
               <option key={a}>{a}</option>
             ))}
           </select>
@@ -784,6 +789,7 @@ function MarketTable({
             <th>Цена</th>
             <th>Изменение</th>
             <th>Режим</th>
+            <th>Котировка · МСК</th>
             <th>Стратегия / ограничение</th>
           </tr>
         </thead>
@@ -829,7 +835,26 @@ function MarketTable({
               <td>
                 <RegimeBadge regime={a.regime} />
               </td>
-              <td>{a.strategy}</td>
+              <td className={a.stale ? "negative" : "muted"}>
+                {a.quoteTime ? (
+                  <>
+                    {new Date(a.quoteTime).toLocaleString("ru-RU", {
+                      timeZone: "Europe/Moscow",
+                      day: "2-digit",
+                      month: "2-digit",
+                      hour: "2-digit",
+                      minute: "2-digit",
+                      second: "2-digit",
+                    })}
+                    {a.stale && (
+                      <small className="block">Устарела · вход запрещён</small>
+                    )}
+                  </>
+                ) : (
+                  "Демо"
+                )}
+              </td>
+              <td className="market-reason">{a.strategy}</td>
             </tr>
           ))}
         </tbody>
@@ -1039,7 +1064,7 @@ export default function App() {
             <div>
               <b>Рабочий счёт</b>
               <small>
-                {source === "demo" ? "Демонстрация" : "Paper engine"}
+                {source === "demo" ? "Демонстрация" : source === 't-invest' ? 'T-Invest · наблюдение' : "Paper engine"}
               </small>
             </div>
             <span className="status-dot" />
@@ -1145,11 +1170,11 @@ export default function App() {
                 ? "Демонстрационный портфель · все котировки и результаты — примеры"
                 : source === "t-invest"
                   ? `T-Invest · ${m.status === "connected" ? "Котировки и анализ · без торговли" : m.status === "loading" ? "Подключаемся…" : "Нет связи"}${m.error ? ` · ${m.error}` : ""}`
-                : m.status === "connected"
-                  ? "Подключено к paper-движку · обновление каждые 2 секунды"
-                  : m.status === "loading"
-                    ? "Подключаемся к paper API…"
-                    : `Нет связи с paper API · ${m.updated ? "показан последний снимок" : "данных нет"}`}
+                  : m.status === "connected"
+                    ? "Подключено к paper-движку · обновление каждые 2 секунды"
+                    : m.status === "loading"
+                      ? "Подключаемся к paper API…"
+                      : `Нет связи с paper API · ${m.updated ? "показан последний снимок" : "данных нет"}`}
             </span>
             <span>
               {source === "demo"
@@ -1192,7 +1217,8 @@ export default function App() {
               <Empty>
                 {m.status === "loading"
                   ? "Ожидаем первый снимок движка…"
-                  : m.error || "API недоступен. Проверьте backend; демонстрационные данные не подставляются."}
+                  : m.error ||
+                    "API недоступен. Проверьте backend; демонстрационные данные не подставляются."}
               </Empty>
             </div>
           ) : (
@@ -1200,8 +1226,29 @@ export default function App() {
               {page === "overview" && source !== "t-invest" && (
                 <Overview m={m} source={source} go={go} />
               )}
-              {source === "t-invest" && page === "overview" && <><Panel title="Котировки T-Invest · часовые индикаторы"><MarketTable data={m.instruments}/></Panel><Panel title="Решения по рыночным данным" className="mt-5"><Journal rows={[...m.journal].reverse()}/></Panel><div className="notice mt-5">SIGNAL — кандидат по правилу стратегии, не заявка. Портфель и календарь событий не подключены, реальная торговля запрещена.</div></>}
-              {source === "t-invest" && page === "portfolio" && <Panel title="Портфель не подключён"><Empty>Это подключение читает только рыночные данные. Брокерские позиции и баланс не запрашиваются.</Empty></Panel>}
+              {source === "t-invest" && page === "overview" && (
+                <>
+                  <Panel title="Котировки T-Invest · часовые индикаторы">
+                    <MarketTable data={m.instruments} />
+                  </Panel>
+                  <Panel title="Решения по рыночным данным" className="mt-5">
+                    <Journal rows={[...m.journal].reverse()} />
+                  </Panel>
+                  <div className="notice mt-5">
+                    SIGNAL — кандидат по правилу стратегии, не заявка. Портфель
+                    и календарь событий не подключены, реальная торговля
+                    запрещена.
+                  </div>
+                </>
+              )}
+              {source === "t-invest" && page === "portfolio" && (
+                <Panel title="Портфель не подключён">
+                  <Empty>
+                    Это подключение читает только рыночные данные. Брокерские
+                    позиции и баланс не запрашиваются.
+                  </Empty>
+                </Panel>
+              )}
               {page === "portfolio" && source !== "t-invest" && (
                 <>
                   <div className="mini-kpis">

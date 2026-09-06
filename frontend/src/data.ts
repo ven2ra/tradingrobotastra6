@@ -82,6 +82,8 @@ export const catalog: Record<
   },
 };
 export interface Asset {
+  quoteTime?: string;
+  stale?: boolean;
   ticker: string;
   name: string;
   kind: "stock" | "bond";

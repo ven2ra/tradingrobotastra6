@@ -83,7 +83,10 @@ def classify(price, bid, ask, stats, age, book_age):
     if stats['adx'] < 20: return 'FLAT', 'ADX < 20: диапазон'
     return 'UNDEFINED', 'Переходный режим: признаки тренда не согласованы'
 
-class MarketDataError(Exception): pass
+class MarketDataError(Exception):
+    def __init__(self, message, status_code=None):
+        super().__init__(message)
+        self.status_code = status_code
 
 class TInvest:
     def __init__(self, token, transport=None, concurrency=3, min_interval=0.35):
@@ -93,6 +96,7 @@ class TInvest:
         self.min_interval = min_interval
         self._rate_lock = asyncio.Lock()
         self._last_call = 0.0
+        self._blocked_until = 0.0
 
     async def _throttle(self):
         # A shared min-interval gate keeps the sustained request rate under
@@ -100,7 +104,7 @@ class TInvest:
         # concurrently; the semaphore alone only bounds in-flight requests.
         async with self._rate_lock:
             now = asyncio.get_event_loop().time()
-            wait = self._last_call + self.min_interval - now
+            wait = max(self._last_call + self.min_interval, self._blocked_until) - now
             if wait > 0:
                 await asyncio.sleep(wait)
             self._last_call = asyncio.get_event_loop().time()
@@ -117,13 +121,20 @@ class TInvest:
         if not response.is_success:
             # Never expose response body, Authorization, request object or token.
             descriptions = {401:'Токен не принят',403:'Недостаточно прав токена',429:'Лимит запросов T-Invest'}
-            raise MarketDataError(f'{descriptions.get(response.status_code,"Ошибка T-Invest")} (HTTP {response.status_code})')
-        try: return response.json()
+            if response.status_code in (429, 503):
+                try: delay = min(60, max(1, float(response.headers.get('retry-after', '15'))))
+                except ValueError: delay = 15
+                self._blocked_until = asyncio.get_running_loop().time() + delay
+            raise MarketDataError(f'{descriptions.get(response.status_code,"Ошибка T-Invest")} (HTTP {response.status_code})', response.status_code)
+        try:
+            data = response.json()
+            if not isinstance(data, dict): raise ValueError('Object expected')
+            return data
         except ValueError: raise MarketDataError('Некорректный JSON T-Invest') from None
 
 class Observer:
     def __init__(self, token=None, instruments=None, transport=None):
-        load_dotenv(ROOT / '.env', override=False)
+        if token is None: load_dotenv(ROOT / '.env', override=False)
         token = token if token is not None else os.getenv('T_INVEST_TOKEN', '')
         try: self.max_instruments = max(1, min(300, int(os.getenv('T_INVEST_MAX_INSTRUMENTS', '300'))))
         except ValueError: self.max_instruments = 300
@@ -137,6 +148,9 @@ class Observer:
         # live, liquidity-flagged MOEX catalog on first run unless pinned below.
         self.ids = (instruments or env_ids)[:self.max_instruments] or None
         self.metadata, self.candle_cache = {}, {}
+        self._instrument_slots = asyncio.Semaphore(concurrency)
+        self._refresh_lock = asyncio.Lock()
+        self.last_attempt = None
         self.marks, self.journal = {}, []
         self.status, self.error, self.updated = ('loading' if token else 'not_configured'), '', None
         try: self.interval = max(15, int(os.getenv('T_INVEST_POLL_SECONDS', '15')))
@@ -153,8 +167,7 @@ class Observer:
             bonds = (await self.api.call('InstrumentsService', 'Bonds',
                 {'instrumentStatus': 'INSTRUMENT_STATUS_BASE'})).get('instruments', [])
         except MarketDataError as exc:
-            self.ids, self.status, self.error = [], 'error', str(exc)
-            self.updated = datetime.now(timezone.utc).isoformat()
+            self.ids, self.status, self.error = None, 'error', str(exc)
             return
         picked = [f"{m['ticker']}_{m['classCode']}" for m in shares if liquid(m) and m.get('classCode') == 'TQBR']
         picked += [f"{m['ticker']}_{m['classCode']}" for m in bonds
@@ -168,18 +181,27 @@ class Observer:
         self.journal = self.journal[-500:]
 
     async def refresh(self):
+        async with self._refresh_lock:
+            await self._refresh()
+
+    async def _refresh(self):
         if not self.api: return
+        self.last_attempt = datetime.now(timezone.utc).isoformat()
         if self.ids is None:
             await self.discover()
         if not self.ids:
             if self.status != 'error':
                 self.status, self.error = 'error', 'Список ликвидных инструментов недоступен'
-                self.updated = datetime.now(timezone.utc).isoformat()
+                self.ids = None
             return
         failures = []
         async def guarded(ident):
-            try: await self.instrument(ident)
-            except (MarketDataError, ValueError, KeyError, TypeError, ArithmeticError) as exc:
+            try:
+                async with self._instrument_slots:
+                    await self.instrument(ident)
+                    self.updated = datetime.now(timezone.utc).isoformat()
+                    if self.status == 'loading': self.status = 'partial'
+            except (MarketDataError, ValueError, KeyError, TypeError, ArithmeticError, IndexError) as exc:
                 reason = str(exc) if isinstance(exc, MarketDataError) else 'Неполные или некорректные рыночные данные'
                 failures.append(reason)
                 if ident in self.marks:
@@ -188,7 +210,6 @@ class Observer:
         await asyncio.gather(*(guarded(ident) for ident in self.ids))
         self.status = 'error' if len(failures)==len(self.ids) else 'partial' if failures else 'connected'
         self.error = '; '.join(dict.fromkeys(failures))
-        self.updated = datetime.now(timezone.utc).isoformat()
 
     async def instrument(self, ident):
         now = datetime.now(timezone.utc)
@@ -220,6 +241,7 @@ class Observer:
         if price <= 0: raise ValueError('Nonpositive price')
         bid = quotation(book['bids'][0]['price']) if book.get('bids') else None
         ask = quotation(book['asks'][0]['price']) if book.get('asks') else None
+        now = datetime.now(timezone.utc)  # Measure freshness AFTER network/throttle waits.
         age = (now-timestamp(quote['time'])).total_seconds()
         book_age = (now-timestamp(book['orderbookTs'])).total_seconds() if book.get('orderbookTs') else 9999
         regime, reason = classify(price, bid, ask, stats, age, book_age)
@@ -229,7 +251,8 @@ class Observer:
             price=str(price), bid=str(bid) if bid else None, ask=str(ask) if ask else None, lot_size=meta['lot'],
             nominal=str(quotation(meta['nominal'])) if meta.get('nominal') else '1000',
             nkd=str(quotation(meta['aciValue'])) if meta.get('aciValue') else None,
-            regime=regime, time=quote['time'], reason=reason, stale=age>120 or book_age>30,
+            regime=regime, time=quote['time'], book_time=book.get('orderbookTs'), received_at=now.isoformat(),
+            reason=reason, stale=not (0 <= age <= 120 and 0 <= book_age <= 30),
             session_open=session_open, indicators={k:str(v) for k,v in (stats or {}).items()})
         if stats is None or regime in {'SHOCK','LOW_LIQUIDITY','UNDEFINED'} or not session_open or not status.get('limitOrderAvailableFlag'):
             self.log(meta['ticker'], regime, 'RiskOff', 'HOLD', reason+'; новые входы запрещены',price)
@@ -254,14 +277,32 @@ class Observer:
                 self.log(meta['ticker'],regime,plugin.config.id,'HOLD',f'{reason}; {why}',price)
 
     def snapshot(self):
+        now = datetime.now(timezone.utc)
+        marks = {}
+        for ident, mark in self.marks.items():
+            try:
+                age = (now-timestamp(mark['time'])).total_seconds()
+                book_age = (now-timestamp(mark['book_time'])).total_seconds() if mark.get('book_time') else 9999
+                stale = mark.get('stale', False) or not (0 <= age <= 120 and 0 <= book_age <= 30)
+            except (ValueError, TypeError, KeyError): age, stale = None, True
+            marks[ident] = {**mark, 'stale':stale, 'age_seconds':round(age,1) if age is not None else None}
+            if stale:
+                marks[ident].update(regime='UNDEFINED', reason='Котировка или стакан устарели; новые входы запрещены')
         return dict(mode='OBSERVE', provider='T-Invest', status=self.status, error=self.error, updated=self.updated,
-                    configured=self.api is not None, marks=self.marks, positions={}, orders=[],
+                    last_attempt=self.last_attempt, configured=self.api is not None, marks=marks, positions={}, orders=[],
+                    tracked_count=len(self.ids or []), stale_count=sum(m['stale'] for m in marks.values()),
                     equity_rub='0',cash_rub='0',day_pnl_rub='0',day_stopped=False,daily_limit_rub='5000')
 
     async def run(self):
         try:
             while True:
-                await self.refresh()
+                try:
+                    await self.refresh()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    # Prevent a malformed provider payload from silently killing the worker.
+                    self.status, self.error = 'error', 'Ошибка обработки T-Invest; повторное подключение запланировано'
                 await asyncio.sleep(self.interval if self.status != 'error' else max(60,self.interval))
         finally:
             if self.api: await self.api.client.aclose()
