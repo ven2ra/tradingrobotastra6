@@ -327,11 +327,14 @@ class Observer:
         now = datetime.now(timezone.utc)
         marks = {}
         for ident, mark in self.marks.items():
-            try:
-                age = (now-timestamp(mark['time'])).total_seconds()
-                book_age = (now-timestamp(mark['book_time'])).total_seconds() if mark.get('book_time') else 9999
-                stale = mark.get('stale', False) or not (0 <= age <= 120 and 0 <= book_age <= 30)
-            except (ValueError, TypeError, KeyError): age, stale = None, True
+            if mark.get('time') is None:
+                age, stale = None, True
+            else:
+                try:
+                    age = (now-timestamp(mark['time'])).total_seconds()
+                    book_age = (now-timestamp(mark['book_time'])).total_seconds() if mark.get('book_time') else 9999
+                    stale = mark.get('stale', False) or not (0 <= age <= 120 and 0 <= book_age <= 30)
+                except (ValueError, TypeError, KeyError, AttributeError): age, stale = None, True
             marks[ident] = {**mark, 'stale':stale, 'age_seconds':round(age,1) if age is not None else None}
             if stale:
                 marks[ident].update(regime='UNDEFINED', reason=mark['reason'] if mark.get('pending_quote') else 'Котировка или стакан устарели; новые входы запрещены')
