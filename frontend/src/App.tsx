@@ -291,9 +291,11 @@ function Journal({
             onChange={(e) => setFilter(e.target.value)}
           >
             <option value="ALL">Все действия</option>
-            {["HOLD", "SIGNAL", "REJECT", "SUBMIT", "FILL", "CANCEL"].map((a) => (
-              <option key={a}>{a}</option>
-            ))}
+            {["HOLD", "SIGNAL", "REJECT", "SUBMIT", "FILL", "CANCEL"].map(
+              (a) => (
+                <option key={a}>{a}</option>
+              ),
+            )}
           </select>
           <button
             className="secondary"
@@ -851,7 +853,7 @@ function MarketTable({
                     )}
                   </>
                 ) : (
-                  "Демо"
+                  a.stale ? "Ожидаем цену" : "Демо"
                 )}
               </td>
               <td className="market-reason">{a.strategy}</td>
@@ -947,6 +949,17 @@ export default function App() {
     [drafts, setDrafts] = useState<Draft[]>(readDrafts),
     [toast, setToast] = useState(""),
     [showAll, setShowAll] = useState(false);
+  const [assetFilter, setAssetFilter] = useState("all");
+  const [excluded, setExcluded] = useState<string[]>(() => {
+    try {
+      const v = JSON.parse(
+        localStorage.getItem("astra.watchlist.excluded.v1") ?? "[]",
+      );
+      return Array.isArray(v) ? v.filter((x) => typeof x === "string") : [];
+    } catch {
+      return [];
+    }
+  });
   const [watch, setWatch] = useState<string[]>(() => {
     try {
       const x = JSON.parse(
@@ -959,6 +972,20 @@ export default function App() {
     }
   });
   const [clock, setClock] = useState(new Date());
+  useEffect(() => {
+    if (source !== "t-invest") return;
+    const additions = m.instruments
+      .map((a) => a.ticker)
+      .filter((t) => !watch.includes(t) && !excluded.includes(t));
+    if (!additions.length) return;
+    const next = [...new Set([...watch, ...additions])];
+    setWatch(next);
+    try {
+      localStorage.setItem("astra.watchlist.v1", JSON.stringify(next));
+    } catch {
+      /* Keep the list usable in memory when browser storage is unavailable. */
+    }
+  }, [source, m.instruments, watch, excluded]);
   useEffect(() => {
     const id = setInterval(() => setClock(new Date()), 1000);
     return () => clearInterval(id);
@@ -1001,12 +1028,21 @@ export default function App() {
     }
   }
   function toggle(t: string) {
+    const removed = watch.includes(t);
     const next = watch.includes(t)
       ? watch.filter((x) => x !== t)
       : [...watch, t];
     setWatch(next);
+    const nextExcluded = removed
+      ? [...new Set([...excluded, t])]
+      : excluded.filter((x) => x !== t);
+    setExcluded(nextExcluded);
     try {
       localStorage.setItem("astra.watchlist.v1", JSON.stringify(next));
+      localStorage.setItem(
+        "astra.watchlist.excluded.v1",
+        JSON.stringify(nextExcluded),
+      );
     } catch {
       setToast("Watchlist изменён только до перезагрузки браузера.");
     }
@@ -1017,7 +1053,8 @@ export default function App() {
       (marketFilter === "ALL" || a.regime === marketFilter) &&
       `${a.ticker} ${a.name}`.toLowerCase().includes(query.toLowerCase()),
   );
-  const unavailable = source !== "demo" && m.updated === null;
+  const unavailable =
+    source !== "demo" && m.updated === null && m.instruments.length === 0;
   return (
     <div className="app-shell">
       <aside className={`sidebar ${menu ? "open" : ""}`}>
@@ -1064,7 +1101,11 @@ export default function App() {
             <div>
               <b>Рабочий счёт</b>
               <small>
-                {source === "demo" ? "Демонстрация" : source === 't-invest' ? 'T-Invest · наблюдение' : "Paper engine"}
+                {source === "demo"
+                  ? "Демонстрация"
+                  : source === "t-invest"
+                    ? "T-Invest · наблюдение"
+                    : "Paper engine"}
               </small>
             </div>
             <span className="status-dot" />
@@ -1541,7 +1582,7 @@ export default function App() {
               )}
               {page === "watchlist" && (
                 <Panel
-                  title="Список наблюдения"
+                  title={`Список наблюдения · ${m.instruments.filter((a) => watch.includes(a.ticker)).length} бумаг`}
                   action={
                     <button
                       className="secondary"
@@ -1562,6 +1603,15 @@ export default function App() {
                         onChange={(e) => setQuery(e.target.value)}
                       />
                     </label>
+                    <select
+                      aria-label="Класс актива"
+                      value={assetFilter}
+                      onChange={(e) => setAssetFilter(e.target.value)}
+                    >
+                      <option value="all">Акции и облигации</option>
+                      <option value="stock">Акции</option>
+                      <option value="bond">Облигации</option>
+                    </select>
                     <span className="small muted">
                       {showAll
                         ? "Отметьте инструменты звёздочкой"
@@ -1570,7 +1620,9 @@ export default function App() {
                   </div>
                   <MarketTable
                     data={market.filter(
-                      (a) => showAll || watch.includes(a.ticker),
+                      (a) =>
+                        (showAll || watch.includes(a.ticker)) &&
+                        (assetFilter === "all" || a.kind === assetFilter),
                     )}
                     watch={watch}
                     toggle={toggle}

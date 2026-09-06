@@ -88,6 +88,24 @@ class MarketDataError(Exception):
         super().__init__(message)
         self.status_code = status_code
 
+def select_universe(shares, bonds, limit=300):
+    """Broker liquidity flag, RUB, main MOEX boards; retain both asset classes."""
+    def eligible(rows, kind, boards):
+        found = {}
+        for m in rows:
+            if (m.get('currency') == 'rub' and m.get('apiTradeAvailableFlag') is True
+                    and m.get('liquidityFlag') is True and m.get('classCode') in boards
+                    and m.get('ticker') and m.get('uid')):
+                found[f"{m['ticker']}_{m['classCode']}"] = {**m, 'instrumentType':kind}
+        preferred = {'SBER','LKOH','YDEX','GAZP'}
+        return sorted(found.items(), key=lambda item:(item[1]['ticker'] not in preferred,item[0]))
+    stocks = eligible(shares, 'share', {'TQBR'})
+    debt = eligible(bonds, 'bond', {'TQOB','TQCB'})
+    # About 100 equities / 200 bonds at limit=300. Fill unused slots from either class.
+    stock_count = min(len(stocks), max(limit // 3, limit - len(debt)))
+    selected = stocks[:stock_count] + debt[:limit-stock_count]
+    return dict(selected)
+
 class TInvest:
     def __init__(self, token, transport=None, concurrency=3, min_interval=0.35):
         self.client = httpx.AsyncClient(headers={'Authorization': f'Bearer {token}'}, timeout=15,
@@ -157,10 +175,6 @@ class Observer:
         except ValueError: self.interval = 15
 
     async def discover(self):
-        # Builds the tracked universe from MOEX's main liquid boards, using
-        # T-Invest's own liquidity_flag rather than a hand-picked ticker list.
-        def liquid(m):
-            return m.get('currency') == 'rub' and m.get('apiTradeAvailableFlag') and m.get('liquidityFlag')
         try:
             shares = (await self.api.call('InstrumentsService', 'Shares',
                 {'instrumentStatus': 'INSTRUMENT_STATUS_BASE'})).get('instruments', [])
@@ -169,10 +183,43 @@ class Observer:
         except MarketDataError as exc:
             self.ids, self.status, self.error = None, 'error', str(exc)
             return
-        picked = [f"{m['ticker']}_{m['classCode']}" for m in shares if liquid(m) and m.get('classCode') == 'TQBR']
-        picked += [f"{m['ticker']}_{m['classCode']}" for m in bonds
-                   if liquid(m) and m.get('classCode') in ('TQOB', 'TQCB')]
-        self.ids = list(dict.fromkeys(picked))[:self.max_instruments]
+        selected = select_universe(shares, bonds, self.max_instruments)
+        self.ids = list(selected)
+        self.metadata.update(selected)
+        # Publish the entire catalog immediately; no need to wait for 300 analyses.
+        for ident, m in selected.items():
+            self.marks.setdefault(ident, dict(ticker=m['ticker'], name=m.get('name',m['ticker']),
+                kind='stock' if m['instrumentType']=='share' else 'bond', price=None,
+                lot_size=m.get('lot',1), regime='UNDEFINED', time=None, stale=True,
+                pending_quote=True, reason='Ожидаем котировку и проверку стакана',
+                nominal=str(quotation(m['nominal'])) if m.get('nominal') else None,
+                nkd=str(quotation(m['aciValue'])) if m.get('aciValue') else None))
+        if selected:
+            self.status = 'partial'
+            await self.warm_quotes()
+
+    async def warm_quotes(self):
+        """Batch initial quotes so the whole watchlist is useful during analysis warmup."""
+        try:
+            response = await self.api.call('MarketDataService','GetLastPrices',
+                {'instrumentId':[self.metadata[i]['uid'] for i in self.ids], 'lastPriceType':'LAST_PRICE_EXCHANGE'})
+            by_uid = {m['uid']:ident for ident,m in self.metadata.items()}
+            for q in response.get('lastPrices',[]):
+                if not isinstance(q,dict): continue
+                ident = by_uid.get(q.get('instrumentUid'))
+                if ident in self.marks:
+                    try:
+                        price = quotation(q['price'])
+                        timestamp(q['time'])
+                        if price > 0:
+                            self.marks[ident].update(price=str(price), time=q['time'], pending_quote=False,
+                                reason='Котировка получена; ожидаем анализ стакана и свечей')
+                    except (ValueError,KeyError,TypeError,AttributeError):
+                        continue  # A missing quote must not discard later valid rows.
+            self.updated = datetime.now(timezone.utc).isoformat()
+        except (MarketDataError, ValueError, KeyError, TypeError):
+            # Per-instrument polling retries; catalog remains visible with no fake prices.
+            self.error = 'Каталог загружен; котировки будут получены при повторном опросе'
 
     def log(self, ticker, regime, strategy, action, reason, price=None, lots=0):
         self.journal.append(dict(time=datetime.now(timezone.utc).astimezone(MSK).isoformat(), ticker=ticker,
@@ -287,7 +334,7 @@ class Observer:
             except (ValueError, TypeError, KeyError): age, stale = None, True
             marks[ident] = {**mark, 'stale':stale, 'age_seconds':round(age,1) if age is not None else None}
             if stale:
-                marks[ident].update(regime='UNDEFINED', reason='Котировка или стакан устарели; новые входы запрещены')
+                marks[ident].update(regime='UNDEFINED', reason=mark['reason'] if mark.get('pending_quote') else 'Котировка или стакан устарели; новые входы запрещены')
         return dict(mode='OBSERVE', provider='T-Invest', status=self.status, error=self.error, updated=self.updated,
                     last_attempt=self.last_attempt, configured=self.api is not None, marks=marks, positions={}, orders=[],
                     tracked_count=len(self.ids or []), stale_count=sum(m['stale'] for m in marks.values()),

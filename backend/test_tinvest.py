@@ -6,7 +6,7 @@ from decimal import Decimal as D
 from unittest.mock import patch
 
 import httpx
-from tinvest import TInvest, Observer, MarketDataError, quotation, indicators, classify
+from tinvest import TInvest, Observer, MarketDataError, quotation, indicators, classify, select_universe
 
 
 class ProviderTests(unittest.IsolatedAsyncioTestCase):
@@ -46,7 +46,7 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
             nonlocal calls
             calls+=1
             if calls==1:return httpx.Response(500)
-            return httpx.Response(200,json={'instruments':[{'ticker':'SBER','classCode':'TQBR','currency':'rub','apiTradeAvailableFlag':True,'liquidityFlag':True}]})
+            return httpx.Response(200,json={'instruments':[{'ticker':'SBER','uid':'sber-uid','classCode':'TQBR','currency':'rub','apiTradeAvailableFlag':True,'liquidityFlag':True}]})
         with patch.dict('os.environ',{'T_INVEST_INSTRUMENTS':''}):
             o=Observer('test',transport=httpx.MockTransport(handler))
         o.api.min_interval=0
@@ -83,6 +83,22 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
 
 
 class IndicatorTests(unittest.TestCase):
+    def test_universe_balances_classes_and_excludes_ineligible(self):
+        make=lambda i,board:dict(ticker=f'T{i:03}',uid=f'{board}-{i}',classCode=board,currency='rub',apiTradeAvailableFlag=True,liquidityFlag=True)
+        stocks=[make(i,'TQBR') for i in range(350)]
+        bonds=[make(i,'TQOB') for i in range(350)]
+        stocks[0]['liquidityFlag']=False
+        stocks[1]['currency']='usd'
+        stocks[2]['apiTradeAvailableFlag']=False
+        selected=select_universe(stocks,bonds)
+        self.assertEqual(len(selected),300)
+        self.assertEqual(sum(m['instrumentType']=='share' for m in selected.values()),100)
+        self.assertEqual(sum(m['instrumentType']=='bond' for m in selected.values()),200)
+        self.assertNotIn('T000_TQBR',selected)
+        self.assertNotIn('T001_TQBR',selected)
+        self.assertNotIn('T002_TQBR',selected)
+        self.assertEqual(len(select_universe(stocks,bonds[:10])),300)
+        self.assertEqual(len(select_universe(stocks[:10],bonds[:10])),17)
     def test_exact_quotation_and_missing_data(self):
         self.assertEqual(quotation({'units':'-1','nano':-500000000}),D('-1.5'))
         with self.assertRaises(ValueError): quotation({})

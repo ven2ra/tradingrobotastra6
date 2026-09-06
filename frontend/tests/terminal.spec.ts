@@ -1,5 +1,55 @@
 import { expect, test } from "@playwright/test";
 
+test("300 liquid instruments are auto-added; asset filter and removals persist", async ({
+  page,
+}) => {
+  const marks = Object.fromEntries(
+    Array.from({ length: 300 }, (_, i) => [
+      `T${i}`,
+      {
+        ticker: `T${i}`,
+        name: `Instrument ${i}`,
+        kind: i < 100 ? "stock" : "bond",
+        price: "100",
+        lot_size: 1,
+        regime: "UNDEFINED",
+        stale: true,
+        time: null,
+      },
+    ]),
+  );
+  await page.route("**/api/t-invest/**", (route) =>
+    route.fulfill({
+      json: route.request().url().endsWith("journal")
+        ? []
+        : {
+            mode: "OBSERVE",
+            status: "partial",
+            configured: true,
+            updated: null,
+            marks,
+            positions: {},
+            orders: [],
+            equity_rub: "0",
+            cash_rub: "0",
+            day_pnl_rub: "0",
+          },
+    }),
+  );
+  await page.goto("/#watchlist");
+  await expect(page.locator("tbody tr")).toHaveCount(300);
+  await page.getByLabel("Класс актива").selectOption("bond");
+  await expect(page.locator("tbody tr")).toHaveCount(200);
+  await page
+    .getByRole("button", { name: "Удалить T100 в Watchlist", exact: true })
+    .click();
+  await expect(page.locator("tbody tr")).toHaveCount(199);
+  await page.reload();
+  await expect(page.locator("tbody tr")).toHaveCount(299);
+  await page.getByLabel("Поиск инструмента").fill("Instrument 299");
+  await expect(page.locator("tbody tr")).toHaveCount(1);
+});
+
 test.beforeEach(async ({ page }) => {
   await page.route("**/api/t-invest/**", (route) =>
     route.fulfill({
