@@ -1,44 +1,28 @@
-"""T-Invest market data and observational decisions. No account/order methods."""
+"""T-Invest market data and observational decisions. No account/order calls
+happen in this file; a fired signal only writes a local, unsent proposal
+via live_orders.create_proposal (see live_orders.py for the actual
+OrdersService boundary and the human-approval gate in front of it).
+"""
 import asyncio
 import os
-import ssl
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal as D
 from pathlib import Path
 
-import certifi
 import httpx
 from dotenv import load_dotenv
+import live_orders
 import settings_store
+from broker import BASE, MarketDataError, _ssl_context, quotation, timestamp
 from engine import Config, Grid, MeanReversion, Stop, Tick, Trend, MSK
 
 ROOT = Path(__file__).resolve().parents[1]
-BASE = 'https://invest-public-api.tbank.ru/rest/tinkoff.public.invest.api.contract.v1.'
-RUSSIAN_ROOT_CA = Path(__file__).resolve().parent / 'certs' / 'russian_trusted_root_ca.pem'
-
-def _ssl_context():
-    # invest-public-api.tbank.ru serves a chain rooted at the Russian Trusted
-    # Sub CA (Минцифры), which is absent from certifi's public trust store.
-    ctx = ssl.create_default_context(cafile=certifi.where())
-    if RUSSIAN_ROOT_CA.is_file():
-        ctx.load_verify_locations(cafile=str(RUSSIAN_ROOT_CA))
-    return ctx
 ALLOWED_METHODS = {
     ('InstrumentsService', 'GetInstrumentBy'), ('InstrumentsService', 'BondBy'),
     ('InstrumentsService', 'Shares'), ('InstrumentsService', 'Bonds'),
     ('MarketDataService', 'GetLastPrices'), ('MarketDataService', 'GetOrderBook'),
     ('MarketDataService', 'GetCandles'), ('MarketDataService', 'GetTradingStatus'),
 }
-
-def quotation(value):
-    if not isinstance(value, dict) or 'units' not in value and 'nano' not in value:
-        raise ValueError('Missing quotation')
-    result = D(str(value.get('units', 0))) + D(str(value.get('nano', 0))) / D('1000000000')
-    if not result.is_finite(): raise ValueError('Nonfinite quotation')
-    return result
-
-def timestamp(value):
-    return datetime.fromisoformat(value.replace('Z', '+00:00'))
 
 def indicators(candles):
     # Only completed, chronologically ordered candles; no current-bar lookahead.
@@ -83,11 +67,6 @@ def classify(price, bid, ask, stats, age, book_age):
             return 'DOWNTREND', 'Цена ниже снижающейся SMA50, ADX ≥ 25'
     if stats['adx'] < 20: return 'FLAT', 'ADX < 20: диапазон'
     return 'UNDEFINED', 'Переходный режим: признаки тренда не согласованы'
-
-class MarketDataError(Exception):
-    def __init__(self, message, status_code=None):
-        super().__init__(message)
-        self.status_code = status_code
 
 def select_universe(shares, bonds, limit=300):
     """Broker liquidity flag, RUB, main MOEX boards; retain both asset classes."""
@@ -320,8 +299,12 @@ class Observer:
             signals = plugin.on_tick(tick)
             if signals:
                 signal = signals[0]
+                proposed = live_orders.create_proposal(meta['ticker'], uid, signal.side, signal.lots,
+                    price, 'LIMIT', f'{plugin.config.id}: {signal.rule}')
+                note = ('Предложение на подтверждение создано в Live.' if proposed
+                        else 'Заявка не создана: режим наблюдения, портфель и календарь не подключены.')
                 self.log(meta['ticker'],regime,plugin.config.id,'SIGNAL',
-                    f'{reason}; кандидат {signal.side}: {signal.rule}. Заявка не создана: режим наблюдения, портфель и календарь не подключены.',price,signal.lots)
+                    f'{reason}; кандидат {signal.side}: {signal.rule}. {note}',price,signal.lots)
             else:
                 why = 'режим не разрешён стратегии' if regime not in plugin.config.regimes else 'правило входа не выполнено'
                 self.log(meta['ticker'],regime,plugin.config.id,'HOLD',f'{reason}; {why}',price)

@@ -12,7 +12,7 @@ from pathlib import Path
 
 import httpx
 import settings_store
-from tinvest import BASE, MarketDataError, _ssl_context, quotation
+from broker import BASE, MarketDataError, _ssl_context, quotation
 
 ALLOWED_METHODS = {
     ('UsersService', 'GetAccounts'),
@@ -69,8 +69,10 @@ class LiveClient:
 class LiveAccount:
     def __init__(self, token=None, transport=None):
         token = token if token is not None else (settings_store.get('T_INVEST_TOKEN') or os.getenv('T_INVEST_TOKEN', ''))
+        self.token = token
         self.api = LiveClient(token, transport) if token else None
         self.preferred_account_id = os.getenv('T_INVEST_ACCOUNT_ID', '') or None
+        self.account_id = None  # Unmasked; populated by summary() for internal (admin-only) use.
 
     async def summary(self):
         if not self.api:
@@ -83,6 +85,7 @@ class LiveAccount:
         if not opened:
             return {'configured': True, 'error': 'На этом токене нет открытых брокерских счетов'}
         account = next((a for a in opened if a.get('id') == self.preferred_account_id), opened[0])
+        self.account_id = account.get('id')
         try:
             portfolio = await self.api.call('OperationsService', 'GetPortfolio', {'accountId': account['id']})
         except MarketDataError as exc:

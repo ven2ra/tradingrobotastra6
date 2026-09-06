@@ -1003,6 +1003,19 @@ interface SettingsStatus {
   token_configured: boolean;
   max_instruments: number;
 }
+interface LiveProposal {
+  id: string;
+  created_at: string;
+  ticker: string;
+  side: string;
+  lots: number;
+  price: string;
+  order_type: string;
+  rule: string;
+  status: string;
+  broker_order_id: string | null;
+  error: string | null;
+}
 function SettingsDialog({ close }: { close: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [status, setStatus] = useState<SettingsStatus | null>(null);
@@ -1013,6 +1026,12 @@ function SettingsDialog({ close }: { close: () => void }) {
   const [message, setMessage] = useState<{ text: string; ok: boolean } | null>(
     null,
   );
+  const [armed, setArmed] = useState<boolean | null>(null);
+  const [proposals, setProposals] = useState<LiveProposal[] | null>(null);
+  const [liveMessage, setLiveMessage] = useState<
+    { text: string; ok: boolean } | null
+  >(null);
+  const [liveBusy, setLiveBusy] = useState("");
   useEffect(() => {
     dialog.current?.showModal();
   }, []);
@@ -1026,6 +1045,121 @@ function SettingsDialog({ close }: { close: () => void }) {
       .catch(() => setStatus(null));
   }
   useEffect(refreshStatus, []);
+  useEffect(() => {
+    fetch("/api/live/armed")
+      .then((r) => r.json())
+      .then((d) => setArmed(Boolean(d.armed)))
+      .catch(() => setArmed(null));
+  }, []);
+  function authHeaders() {
+    return {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${password}`,
+    };
+  }
+  async function loadProposals() {
+    if (!password) return;
+    try {
+      const res = await fetch("/api/live/orders", { headers: authHeaders() });
+      if (res.ok) setProposals(await res.json());
+    } catch {
+      /* keep last known list */
+    }
+  }
+  useEffect(() => {
+    if (!password) return;
+    void loadProposals();
+    const id = setInterval(loadProposals, 5000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [password]);
+  async function toggleArmed() {
+    if (!password) {
+      setLiveMessage({ text: "Введите пароль администратора выше.", ok: false });
+      return;
+    }
+    setLiveBusy("arm");
+    try {
+      const res = await fetch("/api/live/armed", {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({ armed: !armed }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setLiveMessage({ text: body.detail || `Ошибка (HTTP ${res.status})`, ok: false });
+      } else {
+        setArmed(Boolean(body.armed));
+        setLiveMessage({
+          text: body.armed
+            ? "Live взведён. Сигналы стратегий начнут создавать предложения на подтверждение."
+            : "Live снят с взвода.",
+          ok: true,
+        });
+      }
+    } catch {
+      setLiveMessage({ text: "Нет связи с backend.", ok: false });
+    } finally {
+      setLiveBusy("");
+    }
+  }
+  async function decide(id: string, action: "approve" | "reject") {
+    setLiveBusy(id);
+    setLiveMessage(null);
+    try {
+      const res = await fetch(`/api/live/orders/${id}/${action}`, {
+        method: "POST",
+        headers: authHeaders(),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setLiveMessage({ text: body.detail || `Ошибка (HTTP ${res.status})`, ok: false });
+      } else {
+        setLiveMessage({
+          text:
+            action === "approve"
+              ? `Заявка отправлена брокеру: ${body.orderId ?? ""}`
+              : "Предложение отклонено.",
+          ok: true,
+        });
+      }
+    } catch {
+      setLiveMessage({ text: "Нет связи с backend.", ok: false });
+    } finally {
+      setLiveBusy("");
+      void loadProposals();
+    }
+  }
+  async function killSwitch() {
+    if (
+      !confirm(
+        "Снять Live с взвода и отменить все отправленные, но ещё не исполненные заявки?",
+      )
+    )
+      return;
+    setLiveBusy("kill");
+    try {
+      const res = await fetch("/api/live/kill", {
+        method: "POST",
+        headers: authHeaders(),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setLiveMessage({ text: body.detail || `Ошибка (HTTP ${res.status})`, ok: false });
+      } else {
+        setArmed(false);
+        setLiveMessage({
+          text: `Остановлено. Отменено заявок: ${body.cancelled ?? 0}.`,
+          ok: true,
+        });
+      }
+    } catch {
+      setLiveMessage({ text: "Нет связи с backend.", ok: false });
+    } finally {
+      setLiveBusy("");
+      void loadProposals();
+    }
+  }
   async function save() {
     setSaving(true);
     setMessage(null);
@@ -1145,6 +1279,112 @@ function SettingsDialog({ close }: { close: () => void }) {
           >
             {saving ? "Сохраняем…" : "Сохранить и перезапустить"}
           </button>
+          <div className="section-heading mt-5">
+            <div>
+              <h3>Live — предложения на подтверждение</h3>
+              <p>
+                Заявки уходят брокеру только по кнопке «Отправить» ниже.
+                Ничего не исполняется автоматически.
+              </p>
+            </div>
+            <span className={`badge ${armed ? "active-badge" : "muted-badge"}`}>
+              {armed === null ? "…" : armed ? "Взведён" : "Не взведён"}
+            </span>
+          </div>
+          <div className="flex gap-2 mb-4">
+            <button
+              className="secondary"
+              disabled={liveBusy === "arm" || !password}
+              onClick={toggleArmed}
+            >
+              {armed ? "Снять с взвода" : "Взвести Live"}
+            </button>
+            <button
+              className="secondary"
+              disabled={liveBusy === "kill"}
+              onClick={killSwitch}
+            >
+              <LockKeyhole size={14} /> Kill-switch
+            </button>
+          </div>
+          {liveMessage && (
+            <div
+              className={`notice mb-4 ${liveMessage.ok ? "success" : "error"}`}
+              role={liveMessage.ok ? "status" : "alert"}
+            >
+              {liveMessage.text}
+            </div>
+          )}
+          {!password ? (
+            <p className="small muted">
+              Введите пароль администратора выше, чтобы увидеть предложения.
+            </p>
+          ) : !proposals ? (
+            <p className="small muted">Загрузка…</p>
+          ) : !proposals.length ? (
+            <p className="small muted">Предложений пока нет.</p>
+          ) : (
+            <div className="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Время</th>
+                    <th>Тикер</th>
+                    <th>Сторона</th>
+                    <th>Лоты</th>
+                    <th>Цена</th>
+                    <th>Правило</th>
+                    <th>Статус</th>
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {proposals.map((p) => (
+                    <tr key={p.id}>
+                      <td className="mono small">
+                        {new Date(p.created_at).toLocaleTimeString("ru-RU", {
+                          timeZone: "Europe/Moscow",
+                        })}
+                      </td>
+                      <td>
+                        <b>{p.ticker}</b>
+                      </td>
+                      <td>{p.side}</td>
+                      <td>{p.lots}</td>
+                      <td>{p.price}</td>
+                      <td className="small">{p.rule}</td>
+                      <td>
+                        <span className="badge muted-badge">{p.status}</span>
+                        {p.error && (
+                          <div className="small negative">{p.error}</div>
+                        )}
+                      </td>
+                      <td>
+                        {p.status === "PENDING" && (
+                          <div className="flex gap-2">
+                            <button
+                              className="primary"
+                              disabled={liveBusy === p.id}
+                              onClick={() => decide(p.id, "approve")}
+                            >
+                              Отправить
+                            </button>
+                            <button
+                              className="secondary"
+                              disabled={liveBusy === p.id}
+                              onClick={() => decide(p.id, "reject")}
+                            >
+                              Отклонить
+                            </button>
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </>
       )}
     </dialog>
