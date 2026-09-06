@@ -24,6 +24,7 @@ def _ssl_context():
     return ctx
 ALLOWED_METHODS = {
     ('InstrumentsService', 'GetInstrumentBy'), ('InstrumentsService', 'BondBy'),
+    ('InstrumentsService', 'Shares'), ('InstrumentsService', 'Bonds'),
     ('MarketDataService', 'GetLastPrices'), ('MarketDataService', 'GetOrderBook'),
     ('MarketDataService', 'GetCandles'), ('MarketDataService', 'GetTradingStatus'),
 }
@@ -85,17 +86,34 @@ def classify(price, bid, ask, stats, age, book_age):
 class MarketDataError(Exception): pass
 
 class TInvest:
-    def __init__(self, token, transport=None):
+    def __init__(self, token, transport=None, concurrency=3, min_interval=0.35):
         self.client = httpx.AsyncClient(headers={'Authorization': f'Bearer {token}'}, timeout=15,
                                        follow_redirects=False, transport=transport, verify=_ssl_context())
+        self.semaphore = asyncio.Semaphore(max(1, concurrency))
+        self.min_interval = min_interval
+        self._rate_lock = asyncio.Lock()
+        self._last_call = 0.0
+
+    async def _throttle(self):
+        # A shared min-interval gate keeps the sustained request rate under
+        # T-Invest's per-method limit even though many instruments run
+        # concurrently; the semaphore alone only bounds in-flight requests.
+        async with self._rate_lock:
+            now = asyncio.get_event_loop().time()
+            wait = self._last_call + self.min_interval - now
+            if wait > 0:
+                await asyncio.sleep(wait)
+            self._last_call = asyncio.get_event_loop().time()
 
     async def call(self, service, method, body):
         if (service, method) not in ALLOWED_METHODS:
             raise ValueError('Only allowlisted market-data methods are permitted')
-        try:
-            response = await self.client.post(f'{BASE}{service}/{method}', json=body)
-        except httpx.RequestError:
-            raise MarketDataError('Сетевая ошибка T-Invest; проверьте соединение') from None
+        async with self.semaphore:
+            await self._throttle()
+            try:
+                response = await self.client.post(f'{BASE}{service}/{method}', json=body)
+            except httpx.RequestError:
+                raise MarketDataError('Сетевая ошибка T-Invest; проверьте соединение') from None
         if not response.is_success:
             # Never expose response body, Authorization, request object or token.
             descriptions = {401:'Токен не принят',403:'Недостаточно прав токена',429:'Лимит запросов T-Invest'}
@@ -107,13 +125,41 @@ class Observer:
     def __init__(self, token=None, instruments=None, transport=None):
         load_dotenv(ROOT / '.env', override=False)
         token = token if token is not None else os.getenv('T_INVEST_TOKEN', '')
-        self.api = TInvest(token, transport) if token else None
-        self.ids = instruments or [s.strip() for s in os.getenv('T_INVEST_INSTRUMENTS', 'SBER_TQBR,LKOH_TQBR,YDEX_TQBR,GAZP_TQBR').split(',') if s.strip()][:20]
+        try: self.max_instruments = max(1, min(300, int(os.getenv('T_INVEST_MAX_INSTRUMENTS', '300'))))
+        except ValueError: self.max_instruments = 300
+        try: concurrency = max(1, min(10, int(os.getenv('T_INVEST_CONCURRENCY', '3'))))
+        except ValueError: concurrency = 3
+        try: min_interval = max(0.05, float(os.getenv('T_INVEST_MIN_INTERVAL', '0.35')))
+        except ValueError: min_interval = 0.35
+        self.api = TInvest(token, transport, concurrency=concurrency, min_interval=min_interval) if token else None
+        env_ids = [s.strip() for s in os.getenv('T_INVEST_INSTRUMENTS', '').split(',') if s.strip()]
+        # None = universe not discovered yet; refresh() populates it from the
+        # live, liquidity-flagged MOEX catalog on first run unless pinned below.
+        self.ids = (instruments or env_ids)[:self.max_instruments] or None
         self.metadata, self.candle_cache = {}, {}
         self.marks, self.journal = {}, []
         self.status, self.error, self.updated = ('loading' if token else 'not_configured'), '', None
         try: self.interval = max(15, int(os.getenv('T_INVEST_POLL_SECONDS', '15')))
         except ValueError: self.interval = 15
+
+    async def discover(self):
+        # Builds the tracked universe from MOEX's main liquid boards, using
+        # T-Invest's own liquidity_flag rather than a hand-picked ticker list.
+        def liquid(m):
+            return m.get('currency') == 'rub' and m.get('apiTradeAvailableFlag') and m.get('liquidityFlag')
+        try:
+            shares = (await self.api.call('InstrumentsService', 'Shares',
+                {'instrumentStatus': 'INSTRUMENT_STATUS_BASE'})).get('instruments', [])
+            bonds = (await self.api.call('InstrumentsService', 'Bonds',
+                {'instrumentStatus': 'INSTRUMENT_STATUS_BASE'})).get('instruments', [])
+        except MarketDataError as exc:
+            self.ids, self.status, self.error = [], 'error', str(exc)
+            self.updated = datetime.now(timezone.utc).isoformat()
+            return
+        picked = [f"{m['ticker']}_{m['classCode']}" for m in shares if liquid(m) and m.get('classCode') == 'TQBR']
+        picked += [f"{m['ticker']}_{m['classCode']}" for m in bonds
+                   if liquid(m) and m.get('classCode') in ('TQOB', 'TQCB')]
+        self.ids = list(dict.fromkeys(picked))[:self.max_instruments]
 
     def log(self, ticker, regime, strategy, action, reason, price=None, lots=0):
         self.journal.append(dict(time=datetime.now(timezone.utc).astimezone(MSK).isoformat(), ticker=ticker,
@@ -123,8 +169,15 @@ class Observer:
 
     async def refresh(self):
         if not self.api: return
+        if self.ids is None:
+            await self.discover()
+        if not self.ids:
+            if self.status != 'error':
+                self.status, self.error = 'error', 'Список ликвидных инструментов недоступен'
+                self.updated = datetime.now(timezone.utc).isoformat()
+            return
         failures = []
-        for ident in self.ids:
+        async def guarded(ident):
             try: await self.instrument(ident)
             except (MarketDataError, ValueError, KeyError, TypeError, ArithmeticError) as exc:
                 reason = str(exc) if isinstance(exc, MarketDataError) else 'Неполные или некорректные рыночные данные'
@@ -132,6 +185,7 @@ class Observer:
                 if ident in self.marks:
                     self.marks[ident] = {**self.marks[ident], 'regime':'UNDEFINED', 'reason':reason, 'stale':True}
                 self.log(ident, 'UNDEFINED', 'RiskOff', 'HOLD', reason)
+        await asyncio.gather(*(guarded(ident) for ident in self.ids))
         self.status = 'error' if len(failures)==len(self.ids) else 'partial' if failures else 'connected'
         self.error = '; '.join(dict.fromkeys(failures))
         self.updated = datetime.now(timezone.utc).isoformat()
