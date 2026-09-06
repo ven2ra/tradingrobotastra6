@@ -36,3 +36,14 @@ jobs:
           echo "Service did not become healthy in time"
           docker logs astra-trading-app --tail 100 || true
           exit 1
+
+      - name: Verify deployed watchlist catalog
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8765/api/t-invest/snapshot | python3 -c 'import json,sys; s=json.load(sys.stdin); n=len(s.get("marks",{})); print("Published instruments:",n,"status:",s.get("status")); sys.exit(0 if s.get("configured") and n >= 300 else 1)'; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Expected 300 instruments were not published by the deployed API"
+          exit 1
