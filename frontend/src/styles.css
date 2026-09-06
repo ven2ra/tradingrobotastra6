@@ -1167,6 +1167,17 @@ th:last-child {
   font-size: 11px;
   color: #bcadce;
 }
+.field-hint-icon {
+  display: inline-flex;
+  align-items: center;
+  color: #786a8c;
+  vertical-align: -2px;
+  cursor: help;
+  flex-shrink: 0;
+}
+.field-hint-icon:hover {
+  color: #b99bed;
+}
 .field input,
 input,
 select {

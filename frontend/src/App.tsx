@@ -50,6 +50,14 @@ import {
 import { Constructor, readDrafts, RiskEditor, type Draft } from "./Constructor";
 import { useMonitor, type Monitor, type Source } from "./useMonitor";
 
+const regimeExplanations: Record<Regime, string> = {
+  FLAT: "Цена колеблется в диапазоне без выраженного тренда. Разрешены Grid, Mean reversion и другие диапазонные стратегии.",
+  UPTREND: "Устойчивое движение цены вверх, подтверждённое трендовыми индикаторами. Разрешены Trend-follow, Breakout и Momentum.",
+  DOWNTREND: "Устойчивое движение цены вниз. Новые лонги обычно запрещены; актуальны шорт-стратегии и защита позиций.",
+  SHOCK: "Резкий аномальный скачок цены или волатильности. Новые входы запрещены всем стратегиям, работает только Risk-off.",
+  LOW_LIQUIDITY: "Недостаточный объём торгов или ширина спреда. Любые новые сделки запрещены до восстановления ликвидности.",
+  UNDEFINED: "Недостаточно данных, чтобы классифицировать рынок. Новые сделки запрещены до появления надёжного сигнала.",
+};
 const pages = [
   { id: "overview", title: "Обзор", icon: LayoutDashboard },
   { id: "portfolio", title: "Портфель", icon: Wallet },
@@ -61,11 +69,29 @@ const pages = [
   { id: "watchlist", title: "Watchlist", icon: Star },
 ];
 type Page = (typeof pages)[number]["id"];
+const pageGuides: Record<Page, string> = {
+  overview:
+    "Вся картина рынка. Каждая стратегия. Ни одного решения без причины.",
+  portfolio:
+    "Открытые позиции, свободные деньги и текущие заявки по выбранному источнику данных.",
+  strategies:
+    "Разные режимы рынка — разные правила исполнения. Соберите профиль из каталога и сохраните черновик; активация в бою этим движком не поддерживается.",
+  regimes:
+    "Как рынок классифицируется по режимам и какие тикеры сейчас в каком режиме — от этого зависит, каким стратегиям разрешён вход.",
+  risk: "Единые лимиты риска: проверяются перед каждой заявкой независимо от стратегии — дневной стоп, размер позиции, недельная просадка.",
+  journal:
+    "Полная история решений движка: почему заявка отправлена, отклонена или отменена, с указанием причины и режима рынка.",
+  bonds:
+    "Метрики облигаций — доходность к погашению, дюрация, НКД и спред к ОФЗ — используются стратегией Bonds carry для отбора бумаг.",
+  watchlist:
+    "Список инструментов для быстрого наблюдения. Хранится локально в этом браузере и не влияет на торговлю.",
+};
 function RegimeBadge({ regime }: { regime: Regime }) {
   const r = regimes[regime] ?? regimes.UNDEFINED;
   return (
     <span
       className="regime-badge"
+      title={regimeExplanations[regime] ?? regimeExplanations.UNDEFINED}
       style={{ color: r.color, background: `${r.color}12` }}
     >
       {r.icon} {r.label}
@@ -1038,13 +1064,7 @@ export default function App() {
             <div>
               <div className="eyebrow">ВАШ РЫНОК. ВАШИ ПРАВИЛА.</div>
               <h1>{title === "Обзор" ? "Портфель под контролем" : title}</h1>
-              <p>
-                {page === "overview"
-                  ? "Вся картина рынка. Каждая стратегия. Ни одного решения без причины."
-                  : page === "strategies"
-                    ? "Разные режимы рынка — разные правила исполнения."
-                    : "Решения, позиции и ограничения в одном рабочем пространстве."}
-              </p>
+              <p>{pageGuides[page]}</p>
             </div>
             <div className="page-controls">
               <label className="source-select">
@@ -1053,6 +1073,7 @@ export default function App() {
                 />
                 <select
                   aria-label="Источник данных"
+                  title="Демо-данные — вымышленный портфель без backend. Paper API — виртуальный движок исполнения на backend (localhost:8000). T-Invest — реальные котировки MOEX без торговли."
                   value={source}
                   onChange={(e) => setSource(e.target.value as Source)}
                 >
@@ -1286,6 +1307,7 @@ export default function App() {
                       <button
                         key={r}
                         className={`panel regime-card ${marketFilter === r ? "selected" : ""}`}
+                        title={regimeExplanations[r as Regime]}
                         onClick={() =>
                           setMarketFilter(marketFilter === r ? "ALL" : r)
                         }
