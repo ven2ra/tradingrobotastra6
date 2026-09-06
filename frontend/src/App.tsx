@@ -874,36 +874,140 @@ interface LiveAccountInfo {
   positions_count?: number;
   accounts_available?: number;
 }
+interface LiveProposal {
+  id: string;
+  created_at: string;
+  ticker: string;
+  side: string;
+  lots: number;
+  price: string;
+  order_type: string;
+  rule: string;
+  status: string;
+  my_status: string | null;
+  my_broker_order_id: string | null;
+  my_error: string | null;
+}
+const MY_TOKEN_KEY = "live_token_v1";
+const DISMISSED_KEY = "live_dismissed_v1";
+function loadDismissed(): string[] {
+  try {
+    return JSON.parse(localStorage.getItem(DISMISSED_KEY) || "[]");
+  } catch {
+    return [];
+  }
+}
 function LiveDialog({ close }: { close: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [step, setStep] = useState(1);
   const [ack, setAck] = useState(false);
+  const [systemEnabled, setSystemEnabled] = useState<boolean | null>(null);
+  const [myToken, setMyToken] = useState(
+    () => localStorage.getItem(MY_TOKEN_KEY) || "",
+  );
   const [account, setAccount] = useState<LiveAccountInfo | null>(null);
-  const [armResult, setArmResult] = useState("");
+  const [proposals, setProposals] = useState<LiveProposal[] | null>(null);
+  const [dismissed, setDismissed] = useState<string[]>(loadDismissed);
+  const [busy, setBusy] = useState("");
+  const [message, setMessage] = useState<{ text: string; ok: boolean } | null>(
+    null,
+  );
   useEffect(() => {
     dialog.current?.showModal();
   }, []);
   useEffect(() => {
-    if (step !== 2) return;
-    let active = true;
-    fetch("/api/live/account")
+    fetch("/api/live/enabled")
       .then((r) => r.json())
-      .then((d) => active && setAccount(d))
-      .catch(() => active && setAccount({ configured: false, error: "Нет связи с backend" }));
-    return () => {
-      active = false;
-    };
-  }, [step]);
-  async function tryArm() {
-    setArmResult("Проверяем…");
+      .then((d) => setSystemEnabled(Boolean(d.enabled)))
+      .catch(() => setSystemEnabled(null));
+  }, []);
+  function tokenHeaders(): Record<string, string> {
+    return myToken ? { "X-Live-Token": myToken } : {};
+  }
+  function loadAccount() {
+    if (!myToken) {
+      setAccount(null);
+      return;
+    }
+    fetch("/api/live/account", { headers: tokenHeaders() })
+      .then((r) => r.json())
+      .then(setAccount)
+      .catch(() => setAccount({ configured: false, error: "Нет связи с backend" }));
+  }
+  function loadProposals() {
+    fetch("/api/live/orders", { headers: tokenHeaders() })
+      .then((r) => r.json())
+      .then(setProposals)
+      .catch(() => {
+        /* keep last known list */
+      });
+  }
+  useEffect(() => {
+    if (step !== 2) return;
+    loadAccount();
+    loadProposals();
+    const id = setInterval(loadProposals, 5000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, myToken]);
+  function saveToken() {
+    localStorage.setItem(MY_TOKEN_KEY, myToken.trim());
+    setMyToken(myToken.trim());
+    loadAccount();
+  }
+  function dismiss(id: string) {
+    const next = [...dismissed, id];
+    setDismissed(next);
+    localStorage.setItem(DISMISSED_KEY, JSON.stringify(next));
+  }
+  async function approve(id: string) {
+    if (!myToken) {
+      setMessage({ text: "Сначала укажите свой токен T-Invest.", ok: false });
+      return;
+    }
+    setBusy(id);
+    setMessage(null);
     try {
-      const res = await fetch("/api/live/arm", { method: "POST" });
+      const res = await fetch(`/api/live/orders/${id}/approve`, {
+        method: "POST",
+        headers: tokenHeaders(),
+      });
       const body = await res.json().catch(() => ({}));
-      setArmResult(body.detail || `HTTP ${res.status}`);
+      if (!res.ok) {
+        setMessage({ text: body.detail || `Ошибка (HTTP ${res.status})`, ok: false });
+      } else {
+        setMessage({ text: `Заявка отправлена вашему брокеру: ${body.orderId ?? ""}`, ok: true });
+      }
     } catch {
-      setArmResult("Нет связи с backend");
+      setMessage({ text: "Нет связи с backend.", ok: false });
+    } finally {
+      setBusy("");
+      loadProposals();
     }
   }
+  async function killSwitch() {
+    if (!myToken) {
+      setMessage({ text: "Сначала укажите свой токен T-Invest.", ok: false });
+      return;
+    }
+    if (!confirm("Отменить все ваши ещё не исполненные заявки, отправленные этим приложением?")) return;
+    setBusy("kill");
+    try {
+      const res = await fetch("/api/live/kill", { method: "POST", headers: tokenHeaders() });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setMessage({ text: body.detail || `Ошибка (HTTP ${res.status})`, ok: false });
+      } else {
+        setMessage({ text: `Отменено ваших заявок: ${body.cancelled ?? 0}.`, ok: true });
+      }
+    } catch {
+      setMessage({ text: "Нет связи с backend.", ok: false });
+    } finally {
+      setBusy("");
+      loadProposals();
+    }
+  }
+  const visibleProposals = (proposals || []).filter((p) => !dismissed.includes(p.id));
   return (
     <dialog ref={dialog} className="live-dialog" onCancel={close}>
       <button
@@ -917,12 +1021,14 @@ function LiveDialog({ close }: { close: () => void }) {
         <LockKeyhole size={28} />
       </div>
       <div className="eyebrow">LIVE · ШАГ {step} ИЗ 2</div>
-      <h2>{step === 1 ? "Реальная торговля" : "Счёт подключён · заявки — нет"}</h2>
+      <h2>{step === 1 ? "Реальная торговля" : "Ваш счёт и предложения"}</h2>
       {step === 1 ? (
         <>
           <p>
-            Live использует отдельный брокерский счёт и реальные деньги. Переход
-            к следующему шагу не запускает торговлю.
+            Live торгует на вашем собственном брокерском счёте, вашим токеном
+            T-Invest и реальными деньгами. Сервер не хранит ваш токен — он
+            остаётся в этом браузере и передаётся только при ваших
+            действиях (просмотр счёта, подтверждение или отмена заявки).
           </p>
           <div className="notice">
             Не является индивидуальной инвестиционной рекомендацией. Возможна
@@ -934,7 +1040,8 @@ function LiveDialog({ close }: { close: () => void }) {
               checked={ack}
               onChange={(e) => setAck(e.target.checked)}
             />{" "}
-            Я понимаю риск потери капитала
+            Я понимаю риск потери капитала и торгую собственным токеном на
+            свой счёт
           </label>
           <button
             className="primary w-full"
@@ -946,23 +1053,47 @@ function LiveDialog({ close }: { close: () => void }) {
         </>
       ) : (
         <>
-          {!account ? (
+          {systemEnabled === false && (
+            <div className="notice mb-4">
+              Администратор пока не включил приём предложений на сервере —
+              сигналы стратегий не создают заявок ни для кого. Ваш токен
+              ниже всё равно позволяет посмотреть счёт.
+            </div>
+          )}
+          <label className="field span-2 mb-4">
+            Ваш токен T-Invest{" "}
+            <span className="small muted">
+              · нужен доступ к счёту и торговле; хранится только в этом
+              браузере
+            </span>
+            <input
+              type="password"
+              value={myToken}
+              onChange={(e) => setMyToken(e.target.value)}
+              onBlur={saveToken}
+              placeholder="t.…"
+              autoComplete="off"
+            />
+          </label>
+          {!myToken ? (
+            <p className="small muted">Введите токен, чтобы увидеть счёт и предложения.</p>
+          ) : !account ? (
             <p>Запрашиваем данные счёта…</p>
           ) : !account.configured ? (
-            <p>{account.error || "T_INVEST_TOKEN не настроен на сервере."}</p>
+            <p>{account.error}</p>
           ) : account.error ? (
             <>
               <p>Не удалось прочитать счёт: {account.error}</p>
               <div className="notice">
-                Если это «Токен не принят» — вероятно, у токена нет отдельного
-                доступа к счёту (включается при выпуске токена в T-Invest,
-                независимо от прав на котировки).
+                Если это «Токен не принят» — проверьте, что у токена включён
+                доступ к счёту и торговле (это отдельные опции при выпуске
+                токена в T-Invest).
               </div>
             </>
           ) : (
             <>
               <p>
-                Брокерский счёт виден read-only: {account.account_name} ·{" "}
+                Ваш брокерский счёт: {account.account_name} ·{" "}
                 {account.account_id_masked}
               </p>
               <div className="aside-rule">
@@ -981,17 +1112,85 @@ function LiveDialog({ close }: { close: () => void }) {
               )}
             </>
           )}
-          <div className="notice mt-4">
-            Реальные заявки технически возможны, но только вручную:
-            администратор взводит Live и по отдельности подтверждает каждое
-            предложение в «Настройки → Live». Кнопка ниже лишь показывает
-            текущее состояние взвода — включить Live из неё нельзя.
+          <div className="section-heading mt-5">
+            <div>
+              <h3>Предложения на подтверждение</h3>
+              <p>
+                Общие для всех кандидаты от стратегий. Заявка уходит вашему
+                брокеру только когда вы сами нажимаете «Отправить».
+              </p>
+            </div>
           </div>
-          <button className="secondary w-full mt-3" onClick={tryArm}>
-            Проверить состояние
+          {!visibleProposals.length ? (
+            <p className="small muted">Предложений пока нет.</p>
+          ) : (
+            <div className="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Тикер</th>
+                    <th>Сторона</th>
+                    <th>Лоты</th>
+                    <th>Цена</th>
+                    <th>Правило</th>
+                    <th>Ваш статус</th>
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {visibleProposals.map((p) => (
+                    <tr key={p.id}>
+                      <td><b>{p.ticker}</b></td>
+                      <td>{p.side}</td>
+                      <td>{p.lots}</td>
+                      <td>{p.price}</td>
+                      <td className="small">{p.rule}</td>
+                      <td>
+                        <span className="badge muted-badge">{p.my_status || p.status}</span>
+                        {p.my_error && <div className="small negative">{p.my_error}</div>}
+                      </td>
+                      <td>
+                        {p.status === "PENDING" && !p.my_status && (
+                          <div className="flex gap-2">
+                            <button
+                              className="primary"
+                              disabled={busy === p.id || !myToken}
+                              onClick={() => approve(p.id)}
+                            >
+                              Отправить
+                            </button>
+                            <button
+                              className="secondary"
+                              disabled={busy === p.id}
+                              onClick={() => dismiss(p.id)}
+                            >
+                              Скрыть
+                            </button>
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {message && (
+            <div
+              className={`notice mt-4 ${message.ok ? "success" : "error"}`}
+              role={message.ok ? "status" : "alert"}
+            >
+              {message.text}
+            </div>
+          )}
+          <button
+            className="secondary w-full mt-4"
+            disabled={busy === "kill" || !myToken}
+            onClick={killSwitch}
+          >
+            <LockKeyhole size={14} /> Отменить мои заявки (kill-switch)
           </button>
-          {armResult && <p className="small muted mt-2">{armResult}</p>}
-          <button className="primary w-full mt-5" onClick={close}>
+          <button className="primary w-full mt-3" onClick={close}>
             Вернуться в терминал
           </button>
         </>
@@ -1004,19 +1203,6 @@ interface SettingsStatus {
   token_configured: boolean;
   max_instruments: number;
 }
-interface LiveProposal {
-  id: string;
-  created_at: string;
-  ticker: string;
-  side: string;
-  lots: number;
-  price: string;
-  order_type: string;
-  rule: string;
-  status: string;
-  broker_order_id: string | null;
-  error: string | null;
-}
 function SettingsDialog({ close }: { close: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [status, setStatus] = useState<SettingsStatus | null>(null);
@@ -1027,12 +1213,11 @@ function SettingsDialog({ close }: { close: () => void }) {
   const [message, setMessage] = useState<{ text: string; ok: boolean } | null>(
     null,
   );
-  const [armed, setArmed] = useState<boolean | null>(null);
-  const [proposals, setProposals] = useState<LiveProposal[] | null>(null);
+  const [enabled, setEnabled] = useState<boolean | null>(null);
   const [liveMessage, setLiveMessage] = useState<
     { text: string; ok: boolean } | null
   >(null);
-  const [liveBusy, setLiveBusy] = useState("");
+  const [liveBusy, setLiveBusy] = useState(false);
   useEffect(() => {
     dialog.current?.showModal();
   }, []);
@@ -1047,10 +1232,10 @@ function SettingsDialog({ close }: { close: () => void }) {
   }
   useEffect(refreshStatus, []);
   useEffect(() => {
-    fetch("/api/live/armed")
+    fetch("/api/live/enabled")
       .then((r) => r.json())
-      .then((d) => setArmed(Boolean(d.armed)))
-      .catch(() => setArmed(null));
+      .then((d) => setEnabled(Boolean(d.enabled)))
+      .catch(() => setEnabled(null));
   }, []);
   function authHeaders() {
     return {
@@ -1058,107 +1243,34 @@ function SettingsDialog({ close }: { close: () => void }) {
       Authorization: `Bearer ${password}`,
     };
   }
-  async function loadProposals() {
-    if (!password) return;
-    try {
-      const res = await fetch("/api/live/orders", { headers: authHeaders() });
-      if (res.ok) setProposals(await res.json());
-    } catch {
-      /* keep last known list */
-    }
-  }
-  useEffect(() => {
-    if (!password) return;
-    void loadProposals();
-    const id = setInterval(loadProposals, 5000);
-    return () => clearInterval(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [password]);
-  async function toggleArmed() {
+  async function toggleEnabled() {
     if (!password) {
       setLiveMessage({ text: "Введите пароль администратора выше.", ok: false });
       return;
     }
-    setLiveBusy("arm");
+    setLiveBusy(true);
     try {
-      const res = await fetch("/api/live/armed", {
+      const res = await fetch("/api/live/enabled", {
         method: "POST",
         headers: authHeaders(),
-        body: JSON.stringify({ armed: !armed }),
+        body: JSON.stringify({ enabled: !enabled }),
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
         setLiveMessage({ text: body.detail || `Ошибка (HTTP ${res.status})`, ok: false });
       } else {
-        setArmed(Boolean(body.armed));
+        setEnabled(Boolean(body.enabled));
         setLiveMessage({
-          text: body.armed
-            ? "Live взведён. Сигналы стратегий начнут создавать предложения на подтверждение."
-            : "Live снят с взвода.",
+          text: body.enabled
+            ? "Приём предложений включён: сигналы стратегий начнут создавать предложения, которые каждый пользователь подтверждает своим токеном."
+            : "Приём предложений выключен для всех.",
           ok: true,
         });
       }
     } catch {
       setLiveMessage({ text: "Нет связи с backend.", ok: false });
     } finally {
-      setLiveBusy("");
-    }
-  }
-  async function decide(id: string, action: "approve" | "reject") {
-    setLiveBusy(id);
-    setLiveMessage(null);
-    try {
-      const res = await fetch(`/api/live/orders/${id}/${action}`, {
-        method: "POST",
-        headers: authHeaders(),
-      });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        setLiveMessage({ text: body.detail || `Ошибка (HTTP ${res.status})`, ok: false });
-      } else {
-        setLiveMessage({
-          text:
-            action === "approve"
-              ? `Заявка отправлена брокеру: ${body.orderId ?? ""}`
-              : "Предложение отклонено.",
-          ok: true,
-        });
-      }
-    } catch {
-      setLiveMessage({ text: "Нет связи с backend.", ok: false });
-    } finally {
-      setLiveBusy("");
-      void loadProposals();
-    }
-  }
-  async function killSwitch() {
-    if (
-      !confirm(
-        "Снять Live с взвода и отменить все отправленные, но ещё не исполненные заявки?",
-      )
-    )
-      return;
-    setLiveBusy("kill");
-    try {
-      const res = await fetch("/api/live/kill", {
-        method: "POST",
-        headers: authHeaders(),
-      });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        setLiveMessage({ text: body.detail || `Ошибка (HTTP ${res.status})`, ok: false });
-      } else {
-        setArmed(false);
-        setLiveMessage({
-          text: `Остановлено. Отменено заявок: ${body.cancelled ?? 0}.`,
-          ok: true,
-        });
-      }
-    } catch {
-      setLiveMessage({ text: "Нет связи с backend.", ok: false });
-    } finally {
-      setLiveBusy("");
-      void loadProposals();
+      setLiveBusy(false);
     }
   }
   async function save() {
@@ -1282,30 +1394,26 @@ function SettingsDialog({ close }: { close: () => void }) {
           </button>
           <div className="section-heading mt-5">
             <div>
-              <h3>Live — предложения на подтверждение</h3>
+              <h3>Live — приём предложений</h3>
               <p>
-                Заявки уходят брокеру только по кнопке «Отправить» ниже.
-                Ничего не исполняется автоматически.
+                Общий выключатель на весь сервер: разрешает ли он вообще
+                создавать предложения по сигналам стратегий. Каждый
+                пользователь всё равно подтверждает и отправляет заявки сам,
+                своим токеном, в диалоге Live — здесь нет доступа к чужим
+                счетам или токенам.
               </p>
             </div>
-            <span className={`badge ${armed ? "active-badge" : "muted-badge"}`}>
-              {armed === null ? "…" : armed ? "Взведён" : "Не взведён"}
+            <span className={`badge ${enabled ? "active-badge" : "muted-badge"}`}>
+              {enabled === null ? "…" : enabled ? "Включено" : "Выключено"}
             </span>
           </div>
           <div className="flex gap-2 mb-4">
             <button
               className="secondary"
-              disabled={liveBusy === "arm" || !password}
-              onClick={toggleArmed}
+              disabled={liveBusy || !password}
+              onClick={toggleEnabled}
             >
-              {armed ? "Снять с взвода" : "Взвести Live"}
-            </button>
-            <button
-              className="secondary"
-              disabled={liveBusy === "kill"}
-              onClick={killSwitch}
-            >
-              <LockKeyhole size={14} /> Kill-switch
+              {enabled ? "Выключить для всех" : "Включить для всех"}
             </button>
           </div>
           {liveMessage && (
@@ -1314,76 +1422,6 @@ function SettingsDialog({ close }: { close: () => void }) {
               role={liveMessage.ok ? "status" : "alert"}
             >
               {liveMessage.text}
-            </div>
-          )}
-          {!password ? (
-            <p className="small muted">
-              Введите пароль администратора выше, чтобы увидеть предложения.
-            </p>
-          ) : !proposals ? (
-            <p className="small muted">Загрузка…</p>
-          ) : !proposals.length ? (
-            <p className="small muted">Предложений пока нет.</p>
-          ) : (
-            <div className="table-scroll">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Время</th>
-                    <th>Тикер</th>
-                    <th>Сторона</th>
-                    <th>Лоты</th>
-                    <th>Цена</th>
-                    <th>Правило</th>
-                    <th>Статус</th>
-                    <th />
-                  </tr>
-                </thead>
-                <tbody>
-                  {proposals.map((p) => (
-                    <tr key={p.id}>
-                      <td className="mono small">
-                        {new Date(p.created_at).toLocaleTimeString("ru-RU", {
-                          timeZone: "Europe/Moscow",
-                        })}
-                      </td>
-                      <td>
-                        <b>{p.ticker}</b>
-                      </td>
-                      <td>{p.side}</td>
-                      <td>{p.lots}</td>
-                      <td>{p.price}</td>
-                      <td className="small">{p.rule}</td>
-                      <td>
-                        <span className="badge muted-badge">{p.status}</span>
-                        {p.error && (
-                          <div className="small negative">{p.error}</div>
-                        )}
-                      </td>
-                      <td>
-                        {p.status === "PENDING" && (
-                          <div className="flex gap-2">
-                            <button
-                              className="primary"
-                              disabled={liveBusy === p.id}
-                              onClick={() => decide(p.id, "approve")}
-                            >
-                              Отправить
-                            </button>
-                            <button
-                              className="secondary"
-                              disabled={liveBusy === p.id}
-                              onClick={() => decide(p.id, "reject")}
-                            >
-                              Отклонить
-                            </button>
-                          </div>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
             </div>
           )}
         </>

@@ -114,18 +114,6 @@ async def lifespan(app):
     app.state.observer = observer
     market_task = asyncio.create_task(observer.run())
     app.state.market_task = market_task
-    app.state.live_account = LiveAccount()
-    async def _startup_reconcile():
-        # Best-effort: if the process restarted with SENT proposals still
-        # outstanding, find out their real state before anyone can act on
-        # them again. Never blocks startup and never places/cancels orders.
-        try:
-            await app.state.live_account.summary()
-            if app.state.live_account.account_id:
-                await live_orders.reconcile(app.state.live_account.account_id, _live_token())
-        except Exception:
-            pass
-    asyncio.create_task(_startup_reconcile())
     try:
         yield
     finally:
@@ -133,20 +121,17 @@ async def lifespan(app):
         market_task.cancel()
         with suppress(asyncio.CancelledError): await task
         with suppress(asyncio.CancelledError): await market_task
-        await app.state.live_account.aclose()
 
 app = FastAPI(title='MOEX Multi-strategy Paper Reference', lifespan=lifespan)
 
 async def reload_market_data():
     # Applies a settings_store credential change without a server restart:
-    # tear down the running observer/live-account and start fresh ones, which
-    # re-read settings_store on construction.
+    # tear down the running observer and start a fresh one, which re-reads
+    # settings_store (the shared, quotes-only token) on construction.
     app.state.market_task.cancel()
     with suppress(asyncio.CancelledError): await app.state.market_task
     app.state.observer = Observer()
     app.state.market_task = asyncio.create_task(app.state.observer.run())
-    await app.state.live_account.aclose()
-    app.state.live_account = LiveAccount()
 
 def require_admin(authorization: str | None):
     expected = os.getenv('ADMIN_PASSWORD', '')
@@ -180,7 +165,7 @@ async def health():
     observer = app.state.observer
     return {'status':'ok' if not app.state.market_task.done() else 'degraded',
             'market_data':observer.status, 'last_success':observer.updated,
-            'execution':'paper-only', 'live_enabled':False}
+            'execution':'paper-only', 'live_enabled':live_orders.is_enabled()}
 
 @app.get('/api/paper/snapshot')
 async def snapshot():
@@ -220,57 +205,69 @@ async def market_snapshot(): return app.state.observer.snapshot()
 @app.get('/api/t-invest/journal')
 async def market_journal(): return app.state.observer.journal
 
+def _user_token(x_live_token: str | None):
+    token = (x_live_token or '').strip()
+    if not token:
+        raise HTTPException(401, 'Укажите свой токен T-Invest (с доступом к счёту и торговле)')
+    return token
+
+async def _resolve_account(token):
+    # No server-side storage: every call gets a throwaway LiveAccount for the
+    # token handed in on this one request, and it is discarded afterwards.
+    account = LiveAccount(token=token)
+    try:
+        summary = await account.summary()
+        return account.account_id, summary
+    finally:
+        await account.aclose()
+
 @app.get('/api/live/account')
-async def live_account_summary(): return await app.state.live_account.summary()
+async def live_account_summary(x_live_token: str | None = Header(None)):
+    token = (x_live_token or '').strip()
+    if not token:
+        return {'configured': False, 'error': 'Введите свой токен T-Invest, чтобы увидеть счёт'}
+    _, summary = await _resolve_account(token)
+    return summary
 
 @app.get('/api/live/audit')
 async def live_audit(): return read_attempts()
 
-@app.post('/api/live/arm')
-async def live_arm_status():
-    # Public, unauthenticated endpoint: it can only ever report whether an
-    # admin has armed the account elsewhere — it cannot arm anything itself.
-    armed = live_orders.is_armed()
-    detail = ('Live взведён администратором: сигналы стратегий создают предложения на подтверждение, '
-               'но заявка уходит брокеру только после ручного одобрения.' if armed else
-               'Live не взведён. Включить может только администратор через защищённые настройки — '
-               'из этой кнопки самостоятельно включить нельзя.')
-    record_attempt('armed' if armed else 'rejected', detail)
-    if not armed:
-        raise HTTPException(409, detail)
-    return {'armed': True, 'detail': detail}
+@app.get('/api/live/enabled')
+async def live_enabled_status():
+    # Public: admin-controlled system-wide switch for whether strategy
+    # signals turn into proposals at all. It does not authorize trading —
+    # every visitor still approves with their own token.
+    return {'enabled': live_orders.is_enabled()}
 
-def _live_token():
-    return settings_store.get('T_INVEST_TOKEN') or os.getenv('T_INVEST_TOKEN', '')
-
-async def _resolve_account_id():
-    if app.state.live_account.account_id is None:
-        await app.state.live_account.summary()
-    return app.state.live_account.account_id
-
-@app.get('/api/live/armed')
-async def live_armed_status(): return {'armed': live_orders.is_armed()}
-
-@app.post('/api/live/armed')
-async def set_live_armed(payload: dict, authorization: str | None = Header(None)):
+@app.post('/api/live/enabled')
+async def set_live_enabled(payload: dict, authorization: str | None = Header(None)):
     require_admin(authorization)
-    live_orders.set_armed(bool(payload.get('armed')))
-    record_attempt('armed' if live_orders.is_armed() else 'disarmed', 'Изменено администратором')
-    return {'armed': live_orders.is_armed()}
+    live_orders.set_enabled(bool(payload.get('enabled')))
+    record_attempt('enabled' if live_orders.is_enabled() else 'disabled', 'Изменено администратором')
+    return {'enabled': live_orders.is_enabled()}
 
 @app.get('/api/live/orders')
-async def list_live_orders(authorization: str | None = Header(None)):
-    require_admin(authorization)
-    return live_orders.list_proposals()
+async def list_live_orders(x_live_token: str | None = Header(None)):
+    token = (x_live_token or '').strip()
+    account_id = None
+    if token:
+        try:
+            account_id, _ = await _resolve_account(token)
+        except MarketDataError:
+            account_id = None
+    return live_orders.list_proposals(account_id=account_id)
 
 @app.post('/api/live/orders/{proposal_id}/approve')
-async def approve_live_order(proposal_id: str, authorization: str | None = Header(None)):
-    require_admin(authorization)
-    account_id = await _resolve_account_id()
-    if not account_id:
-        raise HTTPException(409, 'Не удалось определить account_id — проверьте счёт в диалоге Live')
+async def approve_live_order(proposal_id: str, x_live_token: str | None = Header(None)):
+    token = _user_token(x_live_token)
     try:
-        result = await live_orders.approve_proposal(proposal_id, account_id, _live_token())
+        account_id, _ = await _resolve_account(token)
+    except MarketDataError as exc:
+        raise HTTPException(502, str(exc)) from None
+    if not account_id:
+        raise HTTPException(409, 'Не удалось определить счёт по этому токену')
+    try:
+        result = await live_orders.approve_proposal(proposal_id, account_id, token)
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from None
     except MarketDataError as exc:
@@ -278,30 +275,29 @@ async def approve_live_order(proposal_id: str, authorization: str | None = Heade
     record_attempt('order_sent', f'{proposal_id} -> {result.get("orderId", "")}')
     return result
 
-@app.post('/api/live/orders/{proposal_id}/reject')
-async def reject_live_order(proposal_id: str, authorization: str | None = Header(None)):
-    require_admin(authorization)
-    try:
-        live_orders.reject_proposal(proposal_id)
-    except ValueError as exc:
-        raise HTTPException(409, str(exc)) from None
-    return {'rejected': proposal_id}
-
 @app.post('/api/live/kill')
-async def live_kill_switch(authorization: str | None = Header(None)):
-    require_admin(authorization)
-    account_id = await _resolve_account_id()
-    result = await live_orders.kill_switch(account_id, _live_token())
+async def live_kill_switch(x_live_token: str | None = Header(None)):
+    token = _user_token(x_live_token)
+    try:
+        account_id, _ = await _resolve_account(token)
+    except MarketDataError as exc:
+        raise HTTPException(502, str(exc)) from None
+    if not account_id:
+        raise HTTPException(409, 'Не удалось определить счёт по этому токену')
+    result = await live_orders.kill_switch(account_id, token)
     record_attempt('kill_switch', json.dumps(result, ensure_ascii=False))
     return result
 
 @app.post('/api/live/reconcile')
-async def live_reconcile(authorization: str | None = Header(None)):
-    require_admin(authorization)
-    account_id = await _resolve_account_id()
+async def live_reconcile(x_live_token: str | None = Header(None)):
+    token = _user_token(x_live_token)
+    try:
+        account_id, _ = await _resolve_account(token)
+    except MarketDataError as exc:
+        raise HTTPException(502, str(exc)) from None
     if not account_id:
-        raise HTTPException(409, 'Не удалось определить account_id — проверьте счёт в диалоге Live')
-    return await live_orders.reconcile(account_id, _live_token())
+        raise HTTPException(409, 'Не удалось определить счёт по этому токену')
+    return await live_orders.reconcile(account_id, token)
 
 _static_dir = os.path.join(os.path.dirname(__file__), 'static')
 if os.path.isdir(_static_dir):

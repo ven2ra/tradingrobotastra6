@@ -166,7 +166,7 @@ test("live acknowledgement, disabled activation, responsive layout", async ({
   await page.getByLabel("Я понимаю риск потери капитала").check();
   await page.getByRole("button", { name: "Продолжить" }).click();
   await expect(
-    page.getByRole("heading", { name: "Счёт подключён · заявки — нет" }),
+    page.getByRole("heading", { name: "Ваш счёт и предложения" }),
   ).toBeVisible();
   await page.getByRole("button", { name: "Вернуться в терминал" }).click();
   expect(

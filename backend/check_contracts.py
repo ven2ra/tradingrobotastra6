@@ -31,7 +31,8 @@ with TestClient(app) as client:
     assert snapshot.status_code == 200
     assert snapshot.json()['mode'] == 'PAPER'
     assert client.get('/api/paper/journal').status_code == 200
-    assert client.post('/api/live/arm').status_code == 409
+    assert client.get('/api/live/enabled').json()['enabled'] is False
+    assert client.post('/api/live/orders/does-not-exist/approve').status_code == 401
     assert client.get('/api/health').json()['live_enabled'] is False
     assert client.get('/api/t-invest/snapshot').json()['configured'] is False
     assert client.post('/api/paper/orders').status_code == 404
