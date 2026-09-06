@@ -1,0 +1,123 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "mode": {
+      "enum": [
+        "paper",
+        "live"
+      ]
+    },
+    "trade_risk_rub": {
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "max_weight_pct": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "maximum": 100
+    },
+    "max_positions": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "daily_turnover_rub": {
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "daily_loss_rub": {
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "weekly_drawdown_pct": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "maximum": 100
+    },
+    "cooldown_seconds": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "max_spread_bps": {
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "stale_seconds": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "fee_bps": {
+      "type": "number",
+      "minimum": 0
+    },
+    "slippage_bps": {
+      "type": "number",
+      "minimum": 0
+    },
+    "event_block_hours": {
+      "type": "number",
+      "minimum": 0
+    },
+    "event_close_hours": {
+      "type": "number",
+      "minimum": 0
+    },
+    "imoex_stop_pct": {
+      "type": "number",
+      "exclusiveMaximum": 0
+    },
+    "default_order_type": {
+      "const": "LIMIT"
+    },
+    "market_allowed_for": {
+      "const": [
+        "SHOCK",
+        "DAILY_STOP",
+        "FORCED_EXIT"
+      ]
+    },
+    "daily_stop_reset": {
+      "const": "next_exchange_session"
+    },
+    "missing_data": {
+      "const": "block_orders"
+    },
+    "single_order_set_per_instrument": {
+      "const": true
+    }
+  },
+  "required": [
+    "version",
+    "id",
+    "mode",
+    "trade_risk_rub",
+    "max_weight_pct",
+    "max_positions",
+    "daily_turnover_rub",
+    "daily_loss_rub",
+    "weekly_drawdown_pct",
+    "cooldown_seconds",
+    "max_spread_bps",
+    "stale_seconds",
+    "fee_bps",
+    "slippage_bps",
+    "event_block_hours",
+    "event_close_hours",
+    "imoex_stop_pct",
+    "default_order_type",
+    "market_allowed_for",
+    "daily_stop_reset",
+    "missing_data",
+    "single_order_set_per_instrument"
+  ],
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ven2ra.github.io/tradingrobotastra6/schemas/risk-policy.schema.json",
+  "title": "RiskPolicy"
+}

@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "id": "paper-default",
+  "mode": "paper",
+  "trade_risk_rub": 1000,
+  "max_weight_pct": 20,
+  "max_positions": 10,
+  "daily_turnover_rub": 1000000,
+  "daily_loss_rub": 5000,
+  "weekly_drawdown_pct": 5,
+  "cooldown_seconds": 900,
+  "max_spread_bps": 100,
+  "stale_seconds": 10,
+  "fee_bps": 5,
+  "slippage_bps": 20,
+  "event_block_hours": 24,
+  "event_close_hours": 0,
+  "imoex_stop_pct": -5,
+  "default_order_type": "LIMIT",
+  "market_allowed_for": [
+    "SHOCK",
+    "DAILY_STOP",
+    "FORCED_EXIT"
+  ],
+  "daily_stop_reset": "next_exchange_session",
+  "missing_data": "block_orders",
+  "single_order_set_per_instrument": true
+}

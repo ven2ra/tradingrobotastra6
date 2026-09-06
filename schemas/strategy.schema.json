@@ -1,0 +1,899 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "kind": {
+      "enum": [
+        "Grid",
+        "Trend",
+        "Breakout",
+        "MeanReversion",
+        "Momentum",
+        "Event",
+        "BondSpread",
+        "RiskOff"
+      ]
+    },
+    "enabled": {
+      "type": "boolean"
+    },
+    "mode": {
+      "enum": [
+        "paper",
+        "live"
+      ]
+    },
+    "instrument_ids": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "description": "SECID:BOARDID"
+      }
+    },
+    "regimes": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "FLAT",
+          "UPTREND",
+          "DOWNTREND",
+          "SHOCK",
+          "LOW_LIQUIDITY",
+          "UNDEFINED"
+        ]
+      }
+    },
+    "priority": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "risk_policy_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "lots": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "max_lots": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "short": {
+      "type": "boolean",
+      "default": false
+    },
+    "stop": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "enum": [
+            "pct",
+            "rub",
+            "atr",
+            "level",
+            "trailing",
+            "points"
+          ]
+        },
+        "value": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "initial_pct": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "activation_pct": {
+          "type": "number",
+          "minimum": 0
+        },
+        "breakeven_pct": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "yield_bps": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
+      },
+      "required": [
+        "mode",
+        "value"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "trailing"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "initial_pct",
+              "activation_pct"
+            ]
+          }
+        }
+      ]
+    },
+    "tp": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "target_pct": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "share_pct": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 100
+          }
+        },
+        "required": [
+          "target_pct",
+          "share_pct"
+        ]
+      }
+    },
+    "params": {}
+  },
+  "required": [
+    "version",
+    "id",
+    "kind",
+    "enabled",
+    "mode",
+    "instrument_ids",
+    "regimes",
+    "priority",
+    "risk_policy_id",
+    "params"
+  ],
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ven2ra.github.io/tradingrobotastra6/schemas/strategy.schema.json",
+  "title": "Strategy",
+  "oneOf": [
+    {
+      "properties": {
+        "kind": {
+          "const": "Grid"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "step_unit": {
+              "enum": [
+                "pct",
+                "atr"
+              ]
+            },
+            "step": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "levels_up": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "levels_down": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "anchor": {
+              "enum": [
+                "session_vwap",
+                "fixed"
+              ]
+            },
+            "fixed_anchor": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "exit": {
+              "enum": [
+                "reverse_level",
+                "tp",
+                "trailing"
+              ]
+            },
+            "outside_flat": {
+              "enum": [
+                "cancel_entries"
+              ]
+            }
+          },
+          "required": [
+            "step_unit",
+            "step",
+            "levels_up",
+            "levels_down",
+            "anchor",
+            "exit",
+            "outside_flat"
+          ],
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "anchor": {
+                    "const": "fixed"
+                  }
+                }
+              },
+              "then": {
+                "required": [
+                  "fixed_anchor"
+                ]
+              }
+            }
+          ]
+        },
+        "regimes": {
+          "items": {
+            "enum": [
+              "FLAT"
+            ]
+          }
+        }
+      },
+      "required": [
+        "lots",
+        "max_lots",
+        "short",
+        "stop",
+        "tp"
+      ]
+    },
+    {
+      "properties": {
+        "kind": {
+          "const": "Trend"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "lookback": {
+              "type": "integer",
+              "minimum": 2
+            },
+            "ma": {
+              "enum": [
+                "sma",
+                "ema"
+              ]
+            },
+            "ma_period": {
+              "type": "integer",
+              "minimum": 2
+            },
+            "adx_min": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "pyramiding": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "max_additions": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 5
+                },
+                "add_every_atr": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                }
+              },
+              "required": [
+                "enabled",
+                "max_additions",
+                "add_every_atr"
+              ]
+            }
+          },
+          "required": [
+            "lookback",
+            "ma",
+            "ma_period",
+            "adx_min",
+            "pyramiding"
+          ]
+        },
+        "regimes": {
+          "items": {
+            "enum": [
+              "UPTREND",
+              "DOWNTREND"
+            ]
+          }
+        }
+      },
+      "required": [
+        "lots",
+        "max_lots",
+        "short",
+        "stop",
+        "tp"
+      ]
+    },
+    {
+      "properties": {
+        "kind": {
+          "const": "Breakout"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "range_bars": {
+              "type": "integer",
+              "minimum": 2
+            },
+            "min_volume_ratio": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "cancel_on_reentry": {
+              "enum": [
+                true
+              ]
+            },
+            "session_from": {
+              "type": "string",
+              "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$"
+            },
+            "session_to": {
+              "type": "string",
+              "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$"
+            },
+            "confirmation_bars": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "required": [
+            "range_bars",
+            "min_volume_ratio",
+            "cancel_on_reentry",
+            "session_from",
+            "session_to",
+            "confirmation_bars"
+          ]
+        },
+        "regimes": {
+          "items": {
+            "enum": [
+              "FLAT",
+              "UPTREND",
+              "DOWNTREND"
+            ]
+          }
+        }
+      },
+      "required": [
+        "lots",
+        "max_lots",
+        "short",
+        "stop",
+        "tp"
+      ]
+    },
+    {
+      "properties": {
+        "kind": {
+          "const": "MeanReversion"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "mean": {
+              "enum": [
+                "vwap",
+                "sma"
+              ]
+            },
+            "period": {
+              "type": "integer",
+              "minimum": 2
+            },
+            "deviation_unit": {
+              "enum": [
+                "atr",
+                "pct"
+              ]
+            },
+            "deviation": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "rsi_low": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 50
+            },
+            "rsi_high": {
+              "type": "number",
+              "minimum": 50,
+              "maximum": 100
+            },
+            "extremum_bars": {
+              "type": "integer",
+              "minimum": 2
+            },
+            "stop_buffer_points": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            }
+          },
+          "required": [
+            "mean",
+            "period",
+            "deviation_unit",
+            "deviation",
+            "rsi_low",
+            "rsi_high",
+            "extremum_bars",
+            "stop_buffer_points"
+          ]
+        },
+        "regimes": {
+          "items": {
+            "enum": [
+              "FLAT"
+            ]
+          }
+        }
+      },
+      "required": [
+        "lots",
+        "max_lots",
+        "short",
+        "stop",
+        "tp"
+      ]
+    },
+    {
+      "properties": {
+        "kind": {
+          "const": "Momentum"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "compression_bars": {
+              "type": "integer",
+              "minimum": 2
+            },
+            "max_atr_ratio": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "min_impulse_atr": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "min_volume_ratio": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "time_stop_bars": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "required": [
+            "compression_bars",
+            "max_atr_ratio",
+            "min_impulse_atr",
+            "min_volume_ratio",
+            "time_stop_bars"
+          ]
+        },
+        "regimes": {
+          "items": {
+            "enum": [
+              "FLAT",
+              "UPTREND",
+              "DOWNTREND"
+            ]
+          }
+        }
+      },
+      "required": [
+        "lots",
+        "max_lots",
+        "short",
+        "stop",
+        "tp"
+      ]
+    },
+    {
+      "properties": {
+        "kind": {
+          "const": "Event"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "events": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "dividend",
+                  "coupon",
+                  "offer",
+                  "placement"
+                ]
+              }
+            },
+            "block_hours": {
+              "type": "number",
+              "minimum": 0
+            },
+            "close_before": {
+              "type": "boolean"
+            },
+            "close_hours": {
+              "type": "number",
+              "minimum": 0
+            },
+            "missing_calendar": {
+              "enum": [
+                "block_entries"
+              ]
+            }
+          },
+          "required": [
+            "events",
+            "block_hours",
+            "close_before",
+            "close_hours",
+            "missing_calendar"
+          ]
+        },
+        "regimes": {
+          "items": {
+            "enum": [
+              "FLAT",
+              "UPTREND",
+              "DOWNTREND",
+              "SHOCK",
+              "LOW_LIQUIDITY",
+              "UNDEFINED"
+            ]
+          }
+        }
+      },
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "lots"
+            ]
+          },
+          {
+            "required": [
+              "max_lots"
+            ]
+          },
+          {
+            "required": [
+              "short"
+            ]
+          },
+          {
+            "required": [
+              "stop"
+            ]
+          },
+          {
+            "required": [
+              "tp"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "properties": {
+        "kind": {
+          "const": "BondSpread"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "min_ytm": {
+              "type": "number",
+              "minimum": 0
+            },
+            "max_duration": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "max_rating_rank": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "min_daily_turnover_rub": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "max_spread_bps": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "signal": {
+              "enum": [
+                "ofz_spread",
+                "offer_approach",
+                "dirty_price_anomaly"
+              ]
+            },
+            "spread_bps": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "offer_days": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "dirty_anomaly_points": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "target_ytm": {
+              "type": "number",
+              "minimum": 0
+            },
+            "ofz_curve": {
+              "enum": [
+                "duration_matched"
+              ]
+            },
+            "yield_basis": {
+              "enum": [
+                "maturity",
+                "offer",
+                "worst"
+              ]
+            }
+          },
+          "required": [
+            "min_ytm",
+            "max_duration",
+            "max_rating_rank",
+            "min_daily_turnover_rub",
+            "max_spread_bps",
+            "signal",
+            "target_ytm",
+            "ofz_curve",
+            "yield_basis"
+          ],
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "signal": {
+                    "const": "ofz_spread"
+                  }
+                }
+              },
+              "then": {
+                "required": [
+                  "spread_bps"
+                ]
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "signal": {
+                    "const": "offer_approach"
+                  }
+                }
+              },
+              "then": {
+                "required": [
+                  "offer_days"
+                ]
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "signal": {
+                    "const": "dirty_price_anomaly"
+                  }
+                }
+              },
+              "then": {
+                "required": [
+                  "dirty_anomaly_points"
+                ]
+              }
+            }
+          ]
+        },
+        "regimes": {
+          "items": {
+            "enum": [
+              "FLAT",
+              "UPTREND",
+              "DOWNTREND"
+            ]
+          }
+        }
+      },
+      "required": [
+        "lots",
+        "max_lots",
+        "short",
+        "stop",
+        "tp"
+      ]
+    },
+    {
+      "properties": {
+        "kind": {
+          "const": "RiskOff"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "shock": {
+              "enum": [
+                true
+              ]
+            },
+            "daily_stop": {
+              "enum": [
+                true
+              ]
+            },
+            "imoex_drop_pct": {
+              "type": "number",
+              "exclusiveMaximum": 0
+            },
+            "cancel_entries": {
+              "enum": [
+                true
+              ]
+            },
+            "allow_only_reduction": {
+              "enum": [
+                true
+              ]
+            }
+          },
+          "required": [
+            "shock",
+            "daily_stop",
+            "imoex_drop_pct",
+            "cancel_entries",
+            "allow_only_reduction"
+          ]
+        },
+        "regimes": {
+          "items": {
+            "enum": [
+              "FLAT",
+              "UPTREND",
+              "DOWNTREND",
+              "SHOCK",
+              "LOW_LIQUIDITY",
+              "UNDEFINED"
+            ]
+          }
+        }
+      },
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "lots"
+            ]
+          },
+          {
+            "required": [
+              "max_lots"
+            ]
+          },
+          {
+            "required": [
+              "short"
+            ]
+          },
+          {
+            "required": [
+              "stop"
+            ]
+          },
+          {
+            "required": [
+              "tp"
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "MeanReversion"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "stop": {
+            "properties": {
+              "mode": {
+                "const": "level"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "BondSpread"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "short": {
+            "const": false
+          },
+          "stop": {
+            "properties": {
+              "mode": {
+                "const": "points"
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$comment": "Semantic validation MUST enforce sum(tp.share_pct)=100, increasing TP targets, lots<=max_lots, instrument eligibility, session windows, enabled policy and server capability. Overlays do not generate entry intents."
+}

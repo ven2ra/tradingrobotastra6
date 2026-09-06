@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "id": "grid-sber",
+  "kind": "Grid",
+  "enabled": true,
+  "mode": "paper",
+  "instrument_ids": [
+    "SBER:TQBR"
+  ],
+  "regimes": [
+    "FLAT"
+  ],
+  "priority": 30,
+  "risk_policy_id": "paper-default",
+  "lots": 1,
+  "max_lots": 10,
+  "short": false,
+  "stop": {
+    "mode": "pct",
+    "value": 2
+  },
+  "tp": [
+    {
+      "target_pct": 1,
+      "share_pct": 30
+    },
+    {
+      "target_pct": 2,
+      "share_pct": 30
+    },
+    {
+      "target_pct": 3,
+      "share_pct": 40
+    }
+  ],
+  "params": {
+    "step_unit": "pct",
+    "step": 1,
+    "levels_up": 5,
+    "levels_down": 5,
+    "anchor": "session_vwap",
+    "exit": "reverse_level",
+    "outside_flat": "cancel_entries"
+  }
+}
