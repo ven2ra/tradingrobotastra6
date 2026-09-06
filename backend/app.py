@@ -2,15 +2,18 @@
 import asyncio
 import json
 import os
+import secrets
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timezone
 from decimal import Decimal as D, ROUND_HALF_UP
 from pathlib import Path
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.staticfiles import StaticFiles
 from jsonschema import Draft202012Validator
+import settings_store
 from engine import BondSpread, Config, Engine, Grid, MeanReversion, RiskPolicy, Stop, Tick, Trend
 from tinvest import Observer
+from live import LiveAccount, read_attempts, record_attempt
 
 engine = Engine(RiskPolicy(), {'SBER': [Grid(Config('grid-sber', 'Grid', frozenset({'FLAT'})))]})
 active_strategies = {'grid-sber': {'id': 'grid-sber', 'kind': 'Grid', 'instrument_ids': ['SBER'],
@@ -109,6 +112,7 @@ async def lifespan(app):
     app.state.observer = observer
     market_task = asyncio.create_task(observer.run())
     app.state.market_task = market_task
+    app.state.live_account = LiveAccount()
     try:
         yield
     finally:
@@ -116,8 +120,47 @@ async def lifespan(app):
         market_task.cancel()
         with suppress(asyncio.CancelledError): await task
         with suppress(asyncio.CancelledError): await market_task
+        await app.state.live_account.aclose()
 
 app = FastAPI(title='MOEX Multi-strategy Paper Reference', lifespan=lifespan)
+
+async def reload_market_data():
+    # Applies a settings_store credential change without a server restart:
+    # tear down the running observer/live-account and start fresh ones, which
+    # re-read settings_store on construction.
+    app.state.market_task.cancel()
+    with suppress(asyncio.CancelledError): await app.state.market_task
+    app.state.observer = Observer()
+    app.state.market_task = asyncio.create_task(app.state.observer.run())
+    await app.state.live_account.aclose()
+    app.state.live_account = LiveAccount()
+
+def require_admin(authorization: str | None):
+    expected = os.getenv('ADMIN_PASSWORD', '')
+    if not expected:
+        raise HTTPException(503, 'ADMIN_PASSWORD не задан на сервере; форма настроек отключена')
+    given = (authorization or '').removeprefix('Bearer ').strip()
+    if not given or not secrets.compare_digest(given, expected):
+        raise HTTPException(401, 'Неверный пароль администратора')
+
+@app.get('/api/settings/status')
+async def settings_status():
+    return {'admin_enabled': bool(os.getenv('ADMIN_PASSWORD')),
+            'token_configured': app.state.observer.api is not None,
+            'max_instruments': app.state.observer.max_instruments}
+
+@app.post('/api/settings/t-invest')
+async def update_t_invest_settings(payload: dict, authorization: str | None = Header(None)):
+    require_admin(authorization)
+    token = str(payload.get('token', '')).strip()
+    if token:
+        settings_store.set('T_INVEST_TOKEN', token)
+    max_instruments = payload.get('max_instruments')
+    if max_instruments:
+        try: settings_store.set('T_INVEST_MAX_INSTRUMENTS', str(max(1, min(300, int(max_instruments)))))
+        except (ValueError, TypeError): raise HTTPException(422, 'max_instruments должен быть числом от 1 до 300')
+    await reload_market_data()
+    return {'reloaded': True, 'token_configured': app.state.observer.api is not None}
 
 @app.get('/api/health')
 async def health():
@@ -164,9 +207,18 @@ async def market_snapshot(): return app.state.observer.snapshot()
 @app.get('/api/t-invest/journal')
 async def market_journal(): return app.state.observer.journal
 
+@app.get('/api/live/account')
+async def live_account_summary(): return await app.state.live_account.summary()
+
+@app.get('/api/live/audit')
+async def live_audit(): return read_attempts()
+
 @app.post('/api/live/arm')
 def live_disabled():
-    raise HTTPException(409, 'Live adapter is not installed; paper reference cannot be armed')
+    detail = ('Отправка реальных заявок не реализована. Доступно только чтение счёта и баланса '
+              '(GetAccounts/GetPortfolio); OrdersService не подключён.')
+    record_attempt('rejected', detail)
+    raise HTTPException(409, detail)
 
 _static_dir = os.path.join(os.path.dirname(__file__), 'static')
 if os.path.isdir(_static_dir):

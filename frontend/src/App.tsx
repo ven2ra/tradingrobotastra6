@@ -865,13 +865,45 @@ function MarketTable({
     </div>
   );
 }
+interface LiveAccountInfo {
+  configured: boolean;
+  error: string;
+  account_id_masked?: string;
+  account_name?: string;
+  total_amount_rub?: string;
+  positions_count?: number;
+  accounts_available?: number;
+}
 function LiveDialog({ close }: { close: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [step, setStep] = useState(1);
   const [ack, setAck] = useState(false);
+  const [account, setAccount] = useState<LiveAccountInfo | null>(null);
+  const [armResult, setArmResult] = useState("");
   useEffect(() => {
     dialog.current?.showModal();
   }, []);
+  useEffect(() => {
+    if (step !== 2) return;
+    let active = true;
+    fetch("/api/live/account")
+      .then((r) => r.json())
+      .then((d) => active && setAccount(d))
+      .catch(() => active && setAccount({ configured: false, error: "Нет связи с backend" }));
+    return () => {
+      active = false;
+    };
+  }, [step]);
+  async function tryArm() {
+    setArmResult("Проверяем…");
+    try {
+      const res = await fetch("/api/live/arm", { method: "POST" });
+      const body = await res.json().catch(() => ({}));
+      setArmResult(body.detail || `HTTP ${res.status}`);
+    } catch {
+      setArmResult("Нет связи с backend");
+    }
+  }
   return (
     <dialog ref={dialog} className="live-dialog" onCancel={close}>
       <button
@@ -885,7 +917,7 @@ function LiveDialog({ close }: { close: () => void }) {
         <LockKeyhole size={28} />
       </div>
       <div className="eyebrow">LIVE · ШАГ {step} ИЗ 2</div>
-      <h2>{step === 1 ? "Реальная торговля" : "Подключение недоступно"}</h2>
+      <h2>{step === 1 ? "Реальная торговля" : "Счёт подключён · заявки — нет"}</h2>
       {step === 1 ? (
         <>
           <p>
@@ -914,16 +946,204 @@ function LiveDialog({ close }: { close: () => void }) {
         </>
       ) : (
         <>
-          <p>
-            В этой версии не установлен Live-адаптер. Счёт не подключён,
-            подтверждение запуска недоступно.
-          </p>
-          <div className="notice">
-            Активация потребует отдельного подтверждения счёта и конфигурации на
-            сервере.
+          {!account ? (
+            <p>Запрашиваем данные счёта…</p>
+          ) : !account.configured ? (
+            <p>{account.error || "T_INVEST_TOKEN не настроен на сервере."}</p>
+          ) : account.error ? (
+            <>
+              <p>Не удалось прочитать счёт: {account.error}</p>
+              <div className="notice">
+                Если это «Токен не принят» — вероятно, у токена нет отдельного
+                доступа к счёту (включается при выпуске токена в T-Invest,
+                независимо от прав на котировки).
+              </div>
+            </>
+          ) : (
+            <>
+              <p>
+                Брокерский счёт виден read-only: {account.account_name} ·{" "}
+                {account.account_id_masked}
+              </p>
+              <div className="aside-rule">
+                <span>Стоимость портфеля</span>
+                <b>{money(Number(account.total_amount_rub ?? 0))}</b>
+              </div>
+              <div className="aside-rule">
+                <span>Открытых позиций</span>
+                <b>{account.positions_count ?? 0}</b>
+              </div>
+              {(account.accounts_available ?? 0) > 1 && (
+                <div className="aside-rule">
+                  <span>Доступно счетов на токене</span>
+                  <b>{account.accounts_available}</b>
+                </div>
+              )}
+            </>
+          )}
+          <div className="notice mt-4">
+            Выставление реальных заявок (OrdersService) не реализовано —
+            только чтение счёта. Кнопка ниже обращается к серверу и покажет
+            настоящий отказ, а не заглушку.
           </div>
+          <button className="secondary w-full mt-3" onClick={tryArm}>
+            Проверить активацию
+          </button>
+          {armResult && <p className="small muted mt-2">{armResult}</p>}
           <button className="primary w-full mt-5" onClick={close}>
             Вернуться в терминал
+          </button>
+        </>
+      )}
+    </dialog>
+  );
+}
+interface SettingsStatus {
+  admin_enabled: boolean;
+  token_configured: boolean;
+  max_instruments: number;
+}
+function SettingsDialog({ close }: { close: () => void }) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  const [status, setStatus] = useState<SettingsStatus | null>(null);
+  const [password, setPassword] = useState("");
+  const [token, setToken] = useState("");
+  const [maxInstruments, setMaxInstruments] = useState("300");
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState<{ text: string; ok: boolean } | null>(
+    null,
+  );
+  useEffect(() => {
+    dialog.current?.showModal();
+  }, []);
+  function refreshStatus() {
+    fetch("/api/settings/status")
+      .then((r) => r.json())
+      .then((d: SettingsStatus) => {
+        setStatus(d);
+        setMaxInstruments(String(d.max_instruments));
+      })
+      .catch(() => setStatus(null));
+  }
+  useEffect(refreshStatus, []);
+  async function save() {
+    setSaving(true);
+    setMessage(null);
+    try {
+      const res = await fetch("/api/settings/t-invest", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${password}`,
+        },
+        body: JSON.stringify({
+          token: token.trim(),
+          max_instruments: Number(maxInstruments) || undefined,
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setMessage({ text: body.detail || `Ошибка (HTTP ${res.status})`, ok: false });
+      } else {
+        setMessage({
+          text: !body.token_configured
+            ? "Сохранено, но токен не настроен."
+            : token.trim()
+              ? "Токен сохранён. Котировки и счёт перезапущены с новым токеном."
+              : "Настройки сохранены. Котировки и счёт перезапущены.",
+          ok: true,
+        });
+        setToken("");
+        refreshStatus();
+      }
+    } catch {
+      setMessage({ text: "Нет связи с backend.", ok: false });
+    } finally {
+      setSaving(false);
+    }
+  }
+  return (
+    <dialog ref={dialog} className="live-dialog" onCancel={close}>
+      <button
+        className="icon-button modal-close"
+        aria-label="Закрыть"
+        onClick={close}
+      >
+        <X size={20} />
+      </button>
+      <div className="modal-icon">
+        <Settings2 size={28} />
+      </div>
+      <div className="eyebrow">НАСТРОЙКИ</div>
+      <h2>Токен T-Invest</h2>
+      {status === null ? (
+        <p>Загрузка…</p>
+      ) : !status.admin_enabled ? (
+        <>
+          <p>
+            Форма отключена: на сервере не задан пароль администратора.
+          </p>
+          <div className="notice">
+            Задайте переменную окружения <code>ADMIN_PASSWORD</code> в{" "}
+            <code>.env</code> на сервере и перезапустите контейнер, чтобы
+            включить этот раздел.
+          </div>
+        </>
+      ) : (
+        <>
+          <p>
+            Токен сейчас {status.token_configured ? "настроен" : "не настроен"}
+            . Изменение сразу перезапускает получение котировок и данных
+            счёта, без остановки контейнера.
+          </p>
+          <div className="form-grid mt-4">
+            <label className="field span-2">
+              Пароль администратора
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                autoComplete="off"
+              />
+            </label>
+            <label className="field span-2">
+              Новый токен T-Invest{" "}
+              <span className="small muted">
+                · оставьте пустым, чтобы не менять
+              </span>
+              <input
+                type="password"
+                value={token}
+                onChange={(e) => setToken(e.target.value)}
+                placeholder="t.…"
+                autoComplete="off"
+              />
+            </label>
+            <label className="field">
+              Максимум инструментов
+              <input
+                type="number"
+                min="1"
+                max="300"
+                value={maxInstruments}
+                onChange={(e) => setMaxInstruments(e.target.value)}
+              />
+            </label>
+          </div>
+          {message && (
+            <div
+              className={`notice mt-4 ${message.ok ? "success" : "error"}`}
+              role={message.ok ? "status" : "alert"}
+            >
+              {message.text}
+            </div>
+          )}
+          <button
+            className="primary w-full mt-5"
+            disabled={saving || !password}
+            onClick={save}
+          >
+            {saving ? "Сохраняем…" : "Сохранить и перезапустить"}
           </button>
         </>
       )}
@@ -949,6 +1169,7 @@ export default function App() {
     [drafts, setDrafts] = useState<Draft[]>(readDrafts),
     [toast, setToast] = useState(""),
     [showAll, setShowAll] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [assetFilter, setAssetFilter] = useState("all");
   const [excluded, setExcluded] = useState<string[]>(() => {
     try {
@@ -1120,6 +1341,9 @@ export default function App() {
           </div>
           <button className="help-button" onClick={() => setInfo(!info)}>
             <CircleHelp size={18} /> О терминале <ArrowUpRight size={14} />
+          </button>
+          <button className="help-button" onClick={() => setSettingsOpen(true)}>
+            <Settings2 size={18} /> Настройки T-Invest
           </button>
           <div className="account">
             <div className="account-avatar">К</div>
@@ -1685,6 +1909,9 @@ export default function App() {
         </main>
       </div>
       {live && <LiveDialog close={() => setLive(false)} />}{" "}
+      {settingsOpen && (
+        <SettingsDialog close={() => setSettingsOpen(false)} />
+      )}
       {toast && (
         <div className="toast" role="status">
           <ShieldCheck size={18} />

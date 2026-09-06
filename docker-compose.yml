@@ -10,6 +10,9 @@ services:
       T_INVEST_MAX_INSTRUMENTS: "300"
     ports:
       - "8765:8765"
+    volumes:
+      # Survives container recreation on every deploy; holds the live-arm audit trail.
+      - ./data:/app/data
     env_file:
       - path: .env
         required: false

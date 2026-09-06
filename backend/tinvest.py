@@ -9,6 +9,7 @@ from pathlib import Path
 import certifi
 import httpx
 from dotenv import load_dotenv
+import settings_store
 from engine import Config, Grid, MeanReversion, Stop, Tick, Trend, MSK
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -153,8 +154,10 @@ class TInvest:
 class Observer:
     def __init__(self, token=None, instruments=None, transport=None):
         if token is None: load_dotenv(ROOT / '.env', override=False)
-        token = token if token is not None else os.getenv('T_INVEST_TOKEN', '')
-        try: self.max_instruments = max(1, min(300, int(os.getenv('T_INVEST_MAX_INSTRUMENTS', '300'))))
+        # An admin-set token in settings_store (via the settings UI) always
+        # wins over the .env default, without needing a server restart.
+        token = token if token is not None else (settings_store.get('T_INVEST_TOKEN') or os.getenv('T_INVEST_TOKEN', ''))
+        try: self.max_instruments = max(1, min(300, int(settings_store.get('T_INVEST_MAX_INSTRUMENTS') or os.getenv('T_INVEST_MAX_INSTRUMENTS', '300'))))
         except ValueError: self.max_instruments = 300
         try: concurrency = max(1, min(10, int(os.getenv('T_INVEST_CONCURRENCY', '3'))))
         except ValueError: concurrency = 3
