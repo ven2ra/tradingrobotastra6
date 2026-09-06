@@ -8,7 +8,7 @@ import {
   type Regime,
 } from "./data";
 
-export type Source = "demo" | "paper" | "t-invest";
+export type Source = "demo" | "paper" | "t-invest" | "live";
 export interface Health {
   score: number;
   label: string;
@@ -101,7 +101,7 @@ const empty: Monitor = {
   status: "loading",
   error: "",
 };
-export function useMonitor(source: Source) {
+export function useMonitor(source: Source, liveToken?: string) {
   const [paper, setPaper] = useState<Monitor>(empty);
   useEffect(() => {
     if (source === "demo") return;
@@ -109,7 +109,75 @@ export function useMonitor(source: Source) {
     let timer: ReturnType<typeof setTimeout>;
     let controller: AbortController;
     setPaper({ ...empty, origin: source });
+    async function pollLive() {
+      controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 5000);
+      if (!liveToken) {
+        if (active)
+          setPaper((old) => ({
+            ...old,
+            origin: source,
+            status: "offline",
+            error: "Введите свой токен T-Invest в диалоге Live",
+          }));
+        clearTimeout(timeout);
+        if (active) timer = setTimeout(poll, 2000);
+        return;
+      }
+      try {
+        const res = await fetch("/api/live/account", {
+          signal: controller.signal,
+          headers: { "X-Live-Token": liveToken },
+        });
+        const d = await res.json();
+        if (!res.ok || !d.configured) throw new Error(d.error || "Live API недоступен");
+        const positions: Asset[] = (d.positions ?? []).map(
+          (p: Record<string, unknown>) => ({
+            ticker: String(p.ticker),
+            name: String(p.name ?? p.ticker),
+            kind: p.kind === "bond" ? "bond" : "stock",
+            price: p.price == null ? null : Number(p.price),
+            change: null,
+            regime: "UNDEFINED" as Regime,
+            color: "#b8a1ff",
+            lots: Number(p.lots ?? 0),
+            lotSize: 1,
+            pnl: p.pnl_rub == null ? null : Number(p.pnl_rub),
+            strategy: "Ваш брокерский счёт",
+          }),
+        );
+        if (active)
+          setPaper((old) => ({
+            ...old,
+            origin: source,
+            equity: Number(d.total_amount_rub ?? 0),
+            cash: Number(d.cash_rub ?? 0),
+            pnl: 0,
+            stopped: false,
+            positions,
+            instruments: positions,
+            journal: [],
+            orders: [],
+            health: null,
+            updated: d.error ? old.updated : Date.now(),
+            status: d.error ? "offline" : "connected",
+            error: d.error ?? "",
+          }));
+      } catch (e) {
+        if (active)
+          setPaper((old) => ({
+            ...old,
+            origin: source,
+            status: "offline",
+            error: e instanceof Error ? e.message : "Нет соединения",
+          }));
+      } finally {
+        clearTimeout(timeout);
+        if (active) timer = setTimeout(poll, 5000);
+      }
+    }
     async function poll() {
+      if (source === "live") return pollLive();
       controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 5000);
       try {
@@ -252,6 +320,6 @@ export function useMonitor(source: Source) {
       clearTimeout(timer);
       controller?.abort();
     };
-  }, [source]);
+  }, [source, liveToken]);
   return source === "demo" ? demo : paper.origin === source ? paper : empty;
 }

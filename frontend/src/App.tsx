@@ -897,22 +897,27 @@ function loadDismissed(): string[] {
     return [];
   }
 }
-function LiveDialog({ close }: { close: () => void }) {
+function LiveDialog({
+  close,
+  activeToken,
+  onCommitToken,
+}: {
+  close: () => void;
+  activeToken: string;
+  onCommitToken: (token: string) => void;
+}) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [step, setStep] = useState(1);
   const [ack, setAck] = useState(false);
   const [systemEnabled, setSystemEnabled] = useState<boolean | null>(null);
-  // tokenInput is just the text box value as the user types it. activeToken
-  // is the committed value actually used for requests — it only changes on
-  // blur/mount, never per keystroke. Without this split, an effect keyed on
-  // every keystroke would fire one fetch per character typed, and those
-  // requests can resolve out of order, letting a stale partial-token error
-  // overwrite the real result for the finished token (the bug behind
+  // tokenInput is just the text box value as the user types it; it only
+  // becomes the shared activeToken (owned by App, also used by the Portfolio
+  // page's Live source) on blur/Enter/click. Without this split, an effect
+  // keyed on every keystroke would fire one fetch per character typed, and
+  // those requests can resolve out of order, letting a stale partial-token
+  // error overwrite the real result for the finished token (the bug behind
   // "ввёл токен, но счёт не появился").
-  const [tokenInput, setTokenInput] = useState(
-    () => localStorage.getItem(MY_TOKEN_KEY) || "",
-  );
-  const [activeToken, setActiveToken] = useState(tokenInput);
+  const [tokenInput, setTokenInput] = useState(activeToken);
   const [account, setAccount] = useState<LiveAccountInfo | null>(null);
   const [proposals, setProposals] = useState<LiveProposal[] | null>(null);
   const [dismissed, setDismissed] = useState<string[]>(loadDismissed);
@@ -968,9 +973,8 @@ function LiveDialog({ close }: { close: () => void }) {
   }, [step, activeToken]);
   function commitToken() {
     const trimmed = tokenInput.trim();
-    localStorage.setItem(MY_TOKEN_KEY, trimmed);
     setTokenInput(trimmed);
-    setActiveToken(trimmed);
+    onCommitToken(trimmed);
   }
   function dismiss(id: string) {
     const next = [...dismissed, id];
@@ -1459,7 +1463,18 @@ export default function App() {
       : "overview",
   );
   const [source, setSource] = useState<Source>("t-invest");
-  const m = useMonitor(source);
+  const [liveToken, setLiveToken] = useState(
+    () => localStorage.getItem(MY_TOKEN_KEY) || "",
+  );
+  function commitLiveToken(token: string) {
+    try {
+      localStorage.setItem(MY_TOKEN_KEY, token);
+    } catch {
+      /* Token still works for this session even if storage is unavailable. */
+    }
+    setLiveToken(token);
+  }
+  const m = useMonitor(source, source === "live" ? liveToken : undefined);
   const [menu, setMenu] = useState(false),
     [live, setLive] = useState(false),
     [info, setInfo] = useState(false),
@@ -1656,7 +1671,9 @@ export default function App() {
                   ? "Демонстрация"
                   : source === "t-invest"
                     ? "T-Invest · наблюдение"
-                    : "Paper engine"}
+                    : source === "live"
+                      ? "Live · реальный счёт"
+                      : "Paper engine"}
               </small>
             </div>
             <span className="status-dot" />
@@ -1728,13 +1745,14 @@ export default function App() {
                 />
                 <select
                   aria-label="Источник данных"
-                  title="Демо-данные — вымышленный портфель без backend. Paper API — виртуальный движок исполнения на backend (localhost:8000). T-Invest — реальные котировки MOEX без торговли."
+                  title="Демо-данные — вымышленный портфель без backend. Paper API — виртуальный движок исполнения на backend (localhost:8000). T-Invest — реальные котировки MOEX без торговли. Live — ваш реальный брокерский счёт по вашему токену из диалога Live."
                   value={source}
                   onChange={(e) => setSource(e.target.value as Source)}
                 >
                   <option value="demo">Демо-данные</option>
                   <option value="paper">Paper API</option>
                   <option value="t-invest">T-Invest · котировки</option>
+                  <option value="live">Live · мой счёт</option>
                 </select>
               </label>
               {page === "strategies" ? (
@@ -1762,18 +1780,22 @@ export default function App() {
                 ? "Демонстрационный портфель · все котировки и результаты — примеры"
                 : source === "t-invest"
                   ? `T-Invest · ${m.status === "connected" ? "Котировки и анализ · без торговли" : m.status === "loading" ? "Подключаемся…" : "Нет связи"}${m.error ? ` · ${m.error}` : ""}`
-                  : m.status === "connected"
-                    ? "Подключено к paper-движку · обновление каждые 2 секунды"
-                    : m.status === "loading"
-                      ? "Подключаемся к paper API…"
-                      : `Нет связи с paper API · ${m.updated ? "показан последний снимок" : "данных нет"}`}
+                  : source === "live"
+                    ? `Live · ваш реальный счёт${m.status === "connected" ? "" : m.error ? ` · ${m.error}` : " · нет связи"}`
+                    : m.status === "connected"
+                      ? "Подключено к paper-движку · обновление каждые 2 секунды"
+                      : m.status === "loading"
+                        ? "Подключаемся к paper API…"
+                        : `Нет связи с paper API · ${m.updated ? "показан последний снимок" : "данных нет"}`}
             </span>
             <span>
               {source === "demo"
                 ? "Заявки не отправляются"
                 : m.updated
                   ? `Снимок ${new Date(m.updated).toLocaleTimeString("ru-RU", { timeZone: "Europe/Moscow" })} МСК`
-                  : "Запустите backend на порту 8000"}
+                  : source === "live"
+                    ? "Введите токен в диалоге Live"
+                    : "Запустите backend на порту 8000"}
             </span>
           </div>
           {info && (
@@ -2210,7 +2232,13 @@ export default function App() {
           </footer>
         </main>
       </div>
-      {live && <LiveDialog close={() => setLive(false)} />}{" "}
+      {live && (
+        <LiveDialog
+          close={() => setLive(false)}
+          activeToken={liveToken}
+          onCommitToken={commitLiveToken}
+        />
+      )}{" "}
       {settingsOpen && (
         <SettingsDialog close={() => setSettingsOpen(false)} />
       )}

@@ -17,6 +17,7 @@ from broker import BASE, MarketDataError, _ssl_context, quotation
 ALLOWED_METHODS = {
     ('UsersService', 'GetAccounts'),
     ('OperationsService', 'GetPortfolio'),
+    ('InstrumentsService', 'GetInstrumentBy'),  # Only to label positions with ticker/name.
 }
 AUDIT_DB = Path(os.getenv('LIVE_AUDIT_DB', str(Path(__file__).resolve().parent / 'data' / 'live_audit.db')))
 
@@ -102,10 +103,39 @@ class LiveAccount:
             'account_name': account.get('name') or account.get('type', ''),
             'opened_date': account.get('openedDate'),
             'total_amount_rub': str(total),
+            'cash_rub': str(amount('totalAmountCurrencies')),
             'expected_yield_pct': str(quotation(yield_pct)) if yield_pct else None,
             'positions_count': len(portfolio.get('positions', [])),
             'accounts_available': len(opened),
+            'positions': await self._positions(portfolio.get('positions', [])),
         }
+
+    async def _positions(self, raw_positions):
+        # Best-effort ticker/name labels for display only; a position whose
+        # instrument can't be resolved (or isn't a share/bond) is skipped
+        # rather than shown with a bare UID.
+        out = []
+        for p in raw_positions:
+            if p.get('instrumentType') not in ('share', 'bond'):
+                continue
+            qty = quotation(p['quantity']) if p.get('quantity') else D('0')
+            if qty == 0:
+                continue
+            uid = p.get('instrumentUid')
+            try:
+                meta = (await self.api.call('InstrumentsService', 'GetInstrumentBy',
+                        {'idType': 'INSTRUMENT_ID_TYPE_UID', 'id': uid}))['instrument']
+            except (MarketDataError, KeyError):
+                continue
+            out.append({
+                'ticker': meta.get('ticker', uid),
+                'name': meta.get('name') or meta.get('ticker', uid),
+                'kind': 'bond' if p['instrumentType'] == 'bond' else 'stock',
+                'price': str(quotation(p['currentPrice'])) if p.get('currentPrice') else None,
+                'lots': str(qty),
+                'pnl_rub': str(quotation(p['expectedYield'])) if p.get('expectedYield') else '0',
+            })
+        return out
 
     async def aclose(self):
         if self.api: await self.api.client.aclose()
