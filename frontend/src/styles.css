@@ -862,6 +862,28 @@ main {
 .health-item svg {
   color: #87b6a3;
 }
+.health-breakdown {
+  border-top: 1px solid #ffffff0e;
+  padding-top: 4px;
+  margin-top: 4px;
+}
+.health-breakdown .health-item {
+  gap: 10px;
+}
+.health-breakdown .health-item > span:first-child {
+  width: 96px;
+  flex-shrink: 0;
+}
+.health-breakdown .health-item .progress-track {
+  flex: 1;
+  margin-top: 0;
+}
+.health-breakdown .health-item small {
+  width: 28px;
+  text-align: right;
+  flex-shrink: 0;
+  color: #8c799a;
+}
 .badge {
   display: inline-flex;
   align-items: center;

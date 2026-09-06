@@ -646,27 +646,65 @@ function Overview({
         </Panel>
         <Panel
           title="Дисциплина риска"
-          action={<ShieldCheck size={17} className="accent" />}
+          action={
+            <ShieldCheck
+              size={17}
+              className="accent"
+              aria-label="Взвешенная оценка использования лимитов риска: дневной стоп 35%, недельная просадка 25%, число позиций 15%, дневной оборот 15%, статус дневного стопа 10%."
+            />
+          }
         >
           <div className="health-row">
-            <div className="health-ring">
+            <div
+              className="health-ring"
+              style={
+                m.health
+                  ? {
+                      background: `conic-gradient(${m.health.score >= 60 ? "#92cab5" : "#f18aa5"} 0 ${m.health.score}%, #ffffff06 ${m.health.score}% 100%)`,
+                    }
+                  : undefined
+              }
+            >
               <b>
-                {source === "demo" ? "96" : "—"}
+                {m.health ? m.health.score : "—"}
                 <small>/ 100</small>
               </b>
             </div>
             <div>
-              <b>{source === "demo" ? "Под контролем" : "Оценка недоступна"}</b>
+              <b>{m.health ? m.health.label : "Оценка недоступна"}</b>
               <p>
-                {source === "demo"
-                  ? "Демонстрационный score"
-                  : "API пока не рассчитывает health-score"}
+                {m.health
+                  ? m.health.note
+                  : "Снимок ещё не получен от API или health-score не рассчитан"}
               </p>
               <span className="badge muted-badge">
-                {source === "demo" ? "Пример оценки" : "Нет телеметрии"}
+                {source === "demo" ? "Пример оценки" : "Расчёт backend"}
               </span>
             </div>
           </div>
+          {m.health && (
+            <div className="health-breakdown">
+              {[
+                ["Дневной лимит", m.health.dailyLossUsedPct],
+                ["Недельная просадка", m.health.weeklyDrawdownUsedPct],
+                ["Число позиций", m.health.positionsUsedPct],
+                ["Дневной оборот", m.health.turnoverUsedPct],
+              ].map(([label, pct]) => (
+                <div className="health-item" key={label as string}>
+                  <span>{label}</span>
+                  <div className="progress-track">
+                    <span
+                      style={{
+                        width: `${Math.min(100, Number(pct))}%`,
+                        background: Number(pct) >= 80 ? "#f18aa5" : "#b9a0fa",
+                      }}
+                    />
+                  </div>
+                  <small>{number(Number(pct), 0)}%</small>
+                </div>
+              ))}
+            </div>
+          )}
           <div className="health-item">
             <ShieldCheck size={14} />
             <span>RiskEngine обязателен для заявки</span>

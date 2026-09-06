@@ -3,13 +3,40 @@ import asyncio
 import os
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timezone
-from decimal import Decimal as D
+from decimal import Decimal as D, ROUND_HALF_UP
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from engine import Config, Engine, Grid, RiskPolicy, Tick
 from tinvest import Observer
 
 engine = Engine(RiskPolicy(), {'SBER': [Grid(Config('grid-sber', 'Grid', frozenset({'FLAT'})))]})
+
+def health_score(state, policy):
+    # A read-only discipline gauge for the UI; never used by RiskEngine to gate orders.
+    day_loss = max(D('0'), state.day_start - state.equity)
+    day_used = min(D('1'), day_loss / policy.daily_loss_rub)
+    week_dd = max(D('0'), state.week_peak - state.equity)
+    week_budget = state.week_peak * policy.weekly_drawdown_pct / D('100')
+    week_used = min(D('1'), week_dd / week_budget) if week_budget > 0 else D('0')
+    pos_used = min(D('1'), D(len(state.positions)) / D(policy.max_positions))
+    turnover_used = min(D('1'), state.turnover / policy.daily_turnover_rub)
+    weighted = (D('35') * (D('1') - day_used) + D('25') * (D('1') - week_used)
+                + D('15') * (D('1') - pos_used) + D('15') * (D('1') - turnover_used)
+                + D('10') * (D('0') if state.day_stopped else D('1')))
+    score = int(weighted.to_integral_value(rounding=ROUND_HALF_UP))
+    score = max(0, min(100, score))
+    if state.day_stopped:
+        label, note = 'Дневной стоп сработал', 'Новые входы запрещены до следующей сессии'
+    elif score >= 85:
+        label, note = 'Под контролем', 'Лимиты риска использованы незначительно'
+    elif score >= 60:
+        label, note = 'Повышенное внимание', 'Часть дневных или недельных лимитов уже выбрана'
+    else:
+        label, note = 'Лимиты под давлением', 'Существенная часть риск-бюджета уже израсходована'
+    pct = lambda v: str((v * 100).quantize(D('0.1')))
+    return {'score': score, 'label': label, 'note': note,
+            'daily_loss_used_pct': pct(day_used), 'weekly_drawdown_used_pct': pct(week_used),
+            'positions_used_pct': pct(pos_used), 'turnover_used_pct': pct(turnover_used)}
 
 async def loop():
     n = 0
@@ -40,6 +67,7 @@ async def snapshot():
     return {'mode': 'PAPER', 'equity_rub': str(s.equity), 'cash_rub': str(s.cash),
             'day_pnl_rub': str(s.equity - s.day_start), 'day_stopped': s.day_stopped,
             'daily_limit_rub': str(engine.risk.policy.daily_loss_rub),
+            'health': health_score(s, engine.risk.policy),
             'positions': {k: {'lots': p.lots, 'strategy': p.config.id, 'entry': str(p.entry),
                 'pnl_rub': str((engine.marks[k].unit(engine.marks[k].bid if p.lots > 0 else engine.marks[k].ask) - p.entry_dirty) * p.lots * engine.marks[k].lot_size)} for k, p in s.positions.items()},
             'marks': {k: {'price': str(t.price), 'kind': t.kind, 'regime': t.regime, 'lot_size': t.lot_size,

@@ -9,6 +9,15 @@ import {
 } from "./data";
 
 export type Source = "demo" | "paper" | "t-invest";
+export interface Health {
+  score: number;
+  label: string;
+  note: string;
+  dailyLossUsedPct: number;
+  weeklyDrawdownUsedPct: number;
+  positionsUsedPct: number;
+  turnoverUsedPct: number;
+}
 export interface Monitor {
   equity: number;
   cash: number;
@@ -27,6 +36,7 @@ export interface Monitor {
   }[];
   history: { time: string; value: number }[];
   dailyLimit: number;
+  health: Health | null;
   updated: number | null;
   status: "demo" | "loading" | "connected" | "offline";
   error: string;
@@ -39,6 +49,15 @@ const demo: Monitor = {
   positions: assets.filter((a) => a.lots > 0),
   instruments: assets,
   journal: demoJournal,
+  health: {
+    score: 96,
+    label: "Под контролем",
+    note: "Демонстрационный score",
+    dailyLossUsedPct: 4,
+    weeklyDrawdownUsedPct: 2,
+    positionsUsedPct: 40,
+    turnoverUsedPct: 12,
+  },
   orders: [
     {
       id: "DEMO-1048",
@@ -76,6 +95,7 @@ const empty: Monitor = {
   orders: [],
   history: [],
   dailyLimit: 5000,
+  health: null,
   updated: null,
   status: "loading",
   error: "",
@@ -159,6 +179,19 @@ export function useMonitor(source: Source) {
             journal: j,
             orders: s.orders,
             dailyLimit: Number(s.daily_limit_rub ?? 5000),
+            health: s.health
+              ? {
+                  score: Number(s.health.score),
+                  label: String(s.health.label),
+                  note: String(s.health.note),
+                  dailyLossUsedPct: Number(s.health.daily_loss_used_pct),
+                  weeklyDrawdownUsedPct: Number(
+                    s.health.weekly_drawdown_used_pct,
+                  ),
+                  positionsUsedPct: Number(s.health.positions_used_pct),
+                  turnoverUsedPct: Number(s.health.turnover_used_pct),
+                }
+              : null,
             updated: source === "t-invest" ? (s.updated ? Date.parse(s.updated) : null) : Date.now(),
             status: source === "t-invest" && !["connected","partial"].includes(s.status) ? (s.status === "loading" ? "loading" : "offline") : "connected",
             error: source === "t-invest" ? (s.error || (s.status === "not_configured" ? "Токен не настроен в серверном .env" : "")) : "",
