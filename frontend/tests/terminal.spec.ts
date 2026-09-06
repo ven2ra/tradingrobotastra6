@@ -1,9 +1,80 @@
 import { expect, test } from "@playwright/test";
 
+test("300 liquid instruments are auto-added; asset filter and removals persist", async ({
+  page,
+}) => {
+  const marks = Object.fromEntries(
+    Array.from({ length: 300 }, (_, i) => [
+      `T${i}`,
+      {
+        ticker: `T${i}`,
+        name: `Instrument ${i}`,
+        kind: i < 100 ? "stock" : "bond",
+        price: "100",
+        lot_size: 1,
+        regime: "UNDEFINED",
+        stale: true,
+        time: null,
+      },
+    ]),
+  );
+  await page.route("**/api/t-invest/**", (route) =>
+    route.fulfill({
+      json: route.request().url().endsWith("journal")
+        ? []
+        : {
+            mode: "OBSERVE",
+            status: "partial",
+            configured: true,
+            updated: null,
+            marks,
+            positions: {},
+            orders: [],
+            equity_rub: "0",
+            cash_rub: "0",
+            day_pnl_rub: "0",
+          },
+    }),
+  );
+  await page.goto("/#watchlist");
+  await expect(page.locator("tbody tr")).toHaveCount(300);
+  await page.getByLabel("Класс актива").selectOption("bond");
+  await expect(page.locator("tbody tr")).toHaveCount(200);
+  await page
+    .getByRole("button", { name: "Удалить T100 в Watchlist", exact: true })
+    .click();
+  await expect(page.locator("tbody tr")).toHaveCount(199);
+  await page.reload();
+  await expect(page.locator("tbody tr")).toHaveCount(299);
+  await page.getByLabel("Поиск инструмента").fill("Instrument 299");
+  await expect(page.locator("tbody tr")).toHaveCount(1);
+});
+
+test.beforeEach(async ({ page }) => {
+  await page.route("**/api/t-invest/**", (route) =>
+    route.fulfill({
+      json: route.request().url().endsWith("journal")
+        ? []
+        : {
+            mode: "OBSERVE",
+            status: "not_configured",
+            configured: false,
+            error: "",
+            updated: null,
+            positions: {},
+            marks: {},
+            orders: [],
+            equity_rub: "0",
+          },
+    }),
+  );
+});
+
 test("screens, watchlist and validated strategy draft", async ({ page }) => {
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
   await page.goto("/");
+  await page.getByLabel("Источник данных").selectOption("demo");
   await expect(
     page.getByRole("heading", { name: "Портфель под контролем" }),
   ).toBeVisible();
@@ -29,6 +100,7 @@ test("screens, watchlist and validated strategy draft", async ({ page }) => {
   }
   await page.getByRole("button", { name: "Удалить SBER в Watchlist" }).click();
   await page.reload();
+  await page.getByLabel("Источник данных").selectOption("demo");
   await expect(
     page.getByRole("button", { name: "Удалить SBER в Watchlist" }),
   ).toHaveCount(0);
@@ -47,7 +119,9 @@ test("screens, watchlist and validated strategy draft", async ({ page }) => {
     .filter({ hasText: "Сетка в диапазоне" })
     .click();
   await page.getByLabel("Название / ID").fill("grid-browser-test");
-  await expect(page.getByLabel("Рост", { exact: false })).toBeDisabled();
+  await expect(
+    page.getByRole("checkbox", { name: "↗ Рост", exact: true }),
+  ).toBeDisabled();
   await page.getByRole("button", { name: "Проверить профиль" }).click();
   await expect(page.getByRole("status")).toContainText(
     "Структура и распределение TP корректны",
@@ -86,6 +160,7 @@ test("live acknowledgement, disabled activation, responsive layout", async ({
 }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/");
+  await page.getByLabel("Источник данных").selectOption("demo");
   await page.getByRole("button", { name: "Live", exact: true }).click();
   await expect(page.getByRole("button", { name: "Продолжить" })).toBeDisabled();
   await page.getByLabel("Я понимаю риск потери капитала").check();

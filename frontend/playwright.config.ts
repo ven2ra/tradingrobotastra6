@@ -5,16 +5,17 @@ export default defineConfig({
   workers: 1,
   reporter: "list",
   use: {
-    baseURL: "http://127.0.0.1:5186",
+    baseURL: "http://127.0.0.1:5190",
     browserName: "chromium",
-    channel: "msedge",
+    channel: process.platform === "win32" ? "msedge" : undefined,
     headless: true,
     viewport: { width: 1440, height: 1100 },
     screenshot: "only-on-failure",
   },
   webServer: {
-    command: "npm run dev -- --port 5186 --strictPort",
-    url: "http://127.0.0.1:5186",
+    command:
+      "node node_modules/vite/bin/vite.js --host 127.0.0.1 --port 5190 --strictPort",
+    url: "http://127.0.0.1:5190",
     reuseExistingServer: false,
   },
 });

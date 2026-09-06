@@ -4,6 +4,10 @@ services:
     image: astra-trading-app:latest
     container_name: astra-trading-app
     restart: unless-stopped
+    # Explicit deployment settings override a legacy four-ticker .env.
+    environment:
+      T_INVEST_INSTRUMENTS: ""
+      T_INVEST_MAX_INSTRUMENTS: "300"
     ports:
       - "8765:8765"
     env_file:
