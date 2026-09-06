@@ -909,7 +909,7 @@ export default function App() {
       ? location.hash.slice(1)
       : "overview",
   );
-  const [source, setSource] = useState<Source>("demo");
+  const [source, setSource] = useState<Source>("t-invest");
   const m = useMonitor(source);
   const [menu, setMenu] = useState(false),
     [live, setLive] = useState(false),
