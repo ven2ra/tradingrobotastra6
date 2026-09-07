@@ -344,6 +344,25 @@ class Observer:
         self.status = 'error' if len(failures)==len(self.ids) else 'partial' if failures else 'connected'
         self.error = '; '.join(dict.fromkeys(failures))
 
+    async def _fetch_candles(self, uid, now):
+        # T-Invest caps a single CANDLE_INTERVAL_HOUR request to a 7-day
+        # window. A 7-CALENDAR-day window alone almost always contains only
+        # 5 trading days once a weekend falls inside it — at MOEX's ~8.8h
+        # main session that's roughly 40 completed hourly candles, always
+        # short of the 60 indicators() requires. Fetch three consecutive
+        # 7-day windows (21 calendar days, ~14-15 trading days) and merge,
+        # so real history actually accumulates past that threshold instead
+        # of permanently starving every instrument of a regime/signal.
+        candles = []
+        for chunk in range(3):
+            end = now - timedelta(days=7 * chunk)
+            start = end - timedelta(days=7)
+            data = await self.api.call('MarketDataService', 'GetCandles', {
+                'instrumentId': uid, 'from': start.isoformat(), 'to': end.isoformat(),
+                'interval': 'CANDLE_INTERVAL_HOUR', 'candleSourceType': 'CANDLE_SOURCE_EXCHANGE'})
+            candles.extend(data.get('candles', []))
+        return candles
+
     async def instrument(self, ident):
         now = datetime.now(timezone.utc)
         if ident not in self.metadata:
@@ -363,11 +382,7 @@ class Observer:
             self.api.call('MarketDataService','GetTradingStatus',{'instrumentId':uid}))
         cached = self.candle_cache.get(ident)
         if not cached or (now-cached[0]).total_seconds() >= 300:
-            # 1h candles: several sessions of history within a single supported interval.
-            data = await self.api.call('MarketDataService','GetCandles',{'instrumentId':uid,
-                'from':(now-timedelta(days=7)).isoformat(), 'to':now.isoformat(),
-                'interval':'CANDLE_INTERVAL_HOUR','candleSourceType':'CANDLE_SOURCE_EXCHANGE'})
-            self.candle_cache[ident] = (now, indicators(data.get('candles', [])))
+            self.candle_cache[ident] = (now, indicators(await self._fetch_candles(uid, now)))
         stats = self.candle_cache[ident][1]
         quote = last['lastPrices'][0]
         price = quotation(quote['price'])

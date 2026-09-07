@@ -122,6 +122,47 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await o.api.client.aclose()
 
+    async def test_candle_history_spans_three_weekly_windows_to_reach_60(self):
+        now = datetime.now(timezone.utc)
+        # A single 7-calendar-day window realistically holds ~5 trading days
+        # of hourly candles (a weekend falls inside it) — well under the 60
+        # indicators() requires. Model that: 25 candles per window, spread
+        # across three non-overlapping weekly windows so the merge clears 60.
+        def make_window(end):
+            q = lambda v: {'units': str(v), 'nano': 0}
+            return [{'time': (end - timedelta(hours=i)).isoformat(), 'isComplete': True,
+                     'open': q(100), 'close': q(100), 'high': q(101), 'low': q(99)} for i in range(25)]
+        candle_calls = []
+        def handler(request):
+            method = request.url.path.rsplit('/', 1)[-1]
+            if method == 'GetCandles':
+                body = json.loads(request.content)
+                candle_calls.append(body)
+                end = datetime.fromisoformat(body['to'])
+                return httpx.Response(200, json={'candles': make_window(end)})
+            now_iso = now.isoformat()
+            data = {
+                'GetLastPrices': {'lastPrices': [{'price': {'units': '100', 'nano': 0}, 'time': now_iso}]},
+                'GetOrderBook': {'bids': [{'price': {'units': '99', 'nano': 0}}],
+                                  'asks': [{'price': {'units': '101', 'nano': 0}}], 'orderbookTs': now_iso},
+                'GetTradingStatus': {'tradingStatus': 'SECURITY_TRADING_STATUS_NORMAL_TRADING',
+                                      'limitOrderAvailableFlag': True},
+            }
+            return httpx.Response(200, json=data[method])
+        o = Observer('test', ['SBER_TQBR'], httpx.MockTransport(handler))
+        o.api.min_interval = 0
+        o.metadata = {'SBER_TQBR': {'uid': 'sber-uid', 'ticker': 'SBER', 'name': 'Sber', 'lot': 10,
+                                     'instrumentType': 'share', 'currency': 'rub',
+                                     'minPriceIncrement': {'units': '0', 'nano': 10000000}}}
+        try:
+            await o.instrument('SBER_TQBR')
+            self.assertEqual(len(candle_calls), 3)  # three chunked requests, not one starved 7-day call
+            self.assertLess((datetime.fromisoformat(candle_calls[0]['to']) -
+                              datetime.fromisoformat(candle_calls[0]['from'])).days, 8)  # each respects the API cap
+            self.assertIsNotNone(o.candle_cache['SBER_TQBR'][1])  # 75 candles merged -> indicators() succeeds
+        finally:
+            await o.api.client.aclose()
+
     async def test_priority_refresh_is_a_noop_with_no_watched_tickers(self):
         calls = []
         o = Observer('test', ['SBER_TQBR'], httpx.MockTransport(lambda r: calls.append(r) or httpx.Response(200, json={})))
