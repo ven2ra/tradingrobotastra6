@@ -199,6 +199,43 @@ test("Настройки T-Invest reachable via hamburger in the 640-900px icon-
   ).toBeVisible();
 });
 
+test("Live button reopens the dialog straight to proposals once token+ack are already saved", async ({
+  page,
+}) => {
+  // Regression: the topbar Live pill used to just flip the data source
+  // silently once a token existed, with no way left to reopen the dialog
+  // (and its proposals list) at all — clicking it looked like nothing
+  // happened.
+  await page.route("**/api/live/account", (route) =>
+    route.fulfill({
+      json: { configured: true, error: "", account_name: "Счёт", account_id_masked: "••1",
+        total_amount_rub: "1000", cash_rub: "1000", positions_count: 0, positions: [] },
+    }),
+  );
+  await page.route("**/api/live/orders", (route) =>
+    route.fulfill({
+      json: [{ id: "p1", created_at: new Date().toISOString(), ticker: "LKOH", side: "BUY",
+        lots: 1, price: "5150", order_type: "LIMIT", rule: "Trend: x", status: "PENDING",
+        my_status: null, my_broker_order_id: null, my_error: null }],
+    }),
+  );
+  await page.route("**/api/live/enabled", (route) => route.fulfill({ json: { enabled: true } }));
+  await page.addInitScript(() => {
+    localStorage.setItem("live_token_v1", "t.valid");
+    localStorage.setItem("live_risk_ack_v1", "1");
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Live", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "Ваш счёт и предложения" }),
+  ).toBeVisible();
+  await expect(page.getByText("LKOH")).toBeVisible();
+  await page.getByRole("button", { name: "Вернуться в терминал" }).click();
+  await page.getByRole("navigation").getByRole("button", { name: "Портфель" }).click();
+  await expect(page.getByRole("heading", { name: "Live", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Отправить" })).toBeVisible();
+});
+
 test("live acknowledgement, disabled activation, responsive layout", async ({
   page,
 }) => {

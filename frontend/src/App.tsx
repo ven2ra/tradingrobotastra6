@@ -888,12 +888,173 @@ interface LiveProposal {
 }
 const MY_TOKEN_KEY = "live_token_v1";
 const DISMISSED_KEY = "live_dismissed_v1";
+const ACK_KEY = "live_risk_ack_v1";
 function loadDismissed(): string[] {
   try {
     return JSON.parse(localStorage.getItem(DISMISSED_KEY) || "[]");
   } catch {
     return [];
   }
+}
+function LiveProposalsPanel({ activeToken }: { activeToken: string }) {
+  const [proposals, setProposals] = useState<LiveProposal[] | null>(null);
+  const [dismissed, setDismissed] = useState<string[]>(loadDismissed);
+  const [busy, setBusy] = useState("");
+  const [message, setMessage] = useState<{ text: string; ok: boolean } | null>(
+    null,
+  );
+  function tokenHeaders(): Record<string, string> {
+    return activeToken ? { "X-Live-Token": activeToken } : {};
+  }
+  function loadProposals() {
+    fetch("/api/live/orders", { headers: tokenHeaders() })
+      .then((r) => r.json())
+      .then(setProposals)
+      .catch(() => {
+        /* keep last known list */
+      });
+  }
+  useEffect(() => {
+    loadProposals();
+    const id = setInterval(loadProposals, 5000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeToken]);
+  function dismiss(id: string) {
+    const next = [...dismissed, id];
+    setDismissed(next);
+    localStorage.setItem(DISMISSED_KEY, JSON.stringify(next));
+  }
+  async function approve(id: string) {
+    if (!activeToken) {
+      setMessage({ text: "Сначала укажите свой токен T-Invest в диалоге Live.", ok: false });
+      return;
+    }
+    setBusy(id);
+    setMessage(null);
+    try {
+      const res = await fetch(`/api/live/orders/${id}/approve`, {
+        method: "POST",
+        headers: tokenHeaders(),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setMessage({ text: body.detail || `Ошибка (HTTP ${res.status})`, ok: false });
+      } else {
+        setMessage({ text: `Заявка отправлена вашему брокеру: ${body.orderId ?? ""}`, ok: true });
+      }
+    } catch {
+      setMessage({ text: "Нет связи с backend.", ok: false });
+    } finally {
+      setBusy("");
+      loadProposals();
+    }
+  }
+  async function killSwitch() {
+    if (!activeToken) {
+      setMessage({ text: "Сначала укажите свой токен T-Invest в диалоге Live.", ok: false });
+      return;
+    }
+    if (!confirm("Отменить все ваши ещё не исполненные заявки, отправленные этим приложением?")) return;
+    setBusy("kill");
+    try {
+      const res = await fetch("/api/live/kill", { method: "POST", headers: tokenHeaders() });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setMessage({ text: body.detail || `Ошибка (HTTP ${res.status})`, ok: false });
+      } else {
+        setMessage({ text: `Отменено ваших заявок: ${body.cancelled ?? 0}.`, ok: true });
+      }
+    } catch {
+      setMessage({ text: "Нет связи с backend.", ok: false });
+    } finally {
+      setBusy("");
+      loadProposals();
+    }
+  }
+  const visibleProposals = (proposals || []).filter((p) => !dismissed.includes(p.id));
+  return (
+    <>
+      <div className="section-heading mt-5">
+        <div>
+          <h3>Предложения на подтверждение</h3>
+          <p>
+            Общие для всех кандидаты от стратегий. Заявка уходит вашему
+            брокеру только когда вы сами нажимаете «Отправить».
+          </p>
+        </div>
+      </div>
+      {!visibleProposals.length ? (
+        <p className="small muted">Предложений пока нет.</p>
+      ) : (
+        <div className="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Тикер</th>
+                <th>Сторона</th>
+                <th>Лоты</th>
+                <th>Цена</th>
+                <th>Правило</th>
+                <th>Ваш статус</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {visibleProposals.map((p) => (
+                <tr key={p.id}>
+                  <td><b>{p.ticker}</b></td>
+                  <td>{p.side}</td>
+                  <td>{p.lots}</td>
+                  <td>{p.price}</td>
+                  <td className="small">{p.rule}</td>
+                  <td>
+                    <span className="badge muted-badge">{p.my_status || p.status}</span>
+                    {p.my_error && <div className="small negative">{p.my_error}</div>}
+                  </td>
+                  <td>
+                    {p.status === "PENDING" && !p.my_status && (
+                      <div className="flex gap-2">
+                        <button
+                          className="primary"
+                          disabled={busy === p.id || !activeToken}
+                          onClick={() => approve(p.id)}
+                        >
+                          Отправить
+                        </button>
+                        <button
+                          className="secondary"
+                          disabled={busy === p.id}
+                          onClick={() => dismiss(p.id)}
+                        >
+                          Скрыть
+                        </button>
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {message && (
+        <div
+          className={`notice mt-4 ${message.ok ? "success" : "error"}`}
+          role={message.ok ? "status" : "alert"}
+        >
+          {message.text}
+        </div>
+      )}
+      <button
+        className="secondary w-full mt-4"
+        disabled={busy === "kill" || !activeToken}
+        onClick={killSwitch}
+      >
+        <LockKeyhole size={14} /> Отменить мои заявки (kill-switch)
+      </button>
+    </>
+  );
 }
 function LiveDialog({
   close,
@@ -905,8 +1066,9 @@ function LiveDialog({
   onCommitToken: (token: string) => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
-  const [step, setStep] = useState(1);
-  const [ack, setAck] = useState(false);
+  const previouslyAcked = localStorage.getItem(ACK_KEY) === "1";
+  const [step, setStep] = useState(previouslyAcked ? 2 : 1);
+  const [ack, setAck] = useState(previouslyAcked);
   const [systemEnabled, setSystemEnabled] = useState<boolean | null>(null);
   // tokenInput is just the text box value as the user types it; it only
   // becomes the shared activeToken (owned by App, also used by the Portfolio
@@ -917,12 +1079,6 @@ function LiveDialog({
   // "ввёл токен, но счёт не появился").
   const [tokenInput, setTokenInput] = useState(activeToken);
   const [account, setAccount] = useState<LiveAccountInfo | null>(null);
-  const [proposals, setProposals] = useState<LiveProposal[] | null>(null);
-  const [dismissed, setDismissed] = useState<string[]>(loadDismissed);
-  const [busy, setBusy] = useState("");
-  const [message, setMessage] = useState<{ text: string; ok: boolean } | null>(
-    null,
-  );
   const accountRequestId = useRef(0);
   useEffect(() => {
     dialog.current?.showModal();
@@ -953,20 +1109,9 @@ function LiveDialog({
         }
       });
   }
-  function loadProposals() {
-    fetch("/api/live/orders", { headers: tokenHeaders() })
-      .then((r) => r.json())
-      .then(setProposals)
-      .catch(() => {
-        /* keep last known list */
-      });
-  }
   useEffect(() => {
     if (step !== 2) return;
     loadAccount();
-    loadProposals();
-    const id = setInterval(loadProposals, 5000);
-    return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step, activeToken]);
   function commitToken() {
@@ -974,59 +1119,6 @@ function LiveDialog({
     setTokenInput(trimmed);
     onCommitToken(trimmed);
   }
-  function dismiss(id: string) {
-    const next = [...dismissed, id];
-    setDismissed(next);
-    localStorage.setItem(DISMISSED_KEY, JSON.stringify(next));
-  }
-  async function approve(id: string) {
-    if (!activeToken) {
-      setMessage({ text: "Сначала укажите свой токен T-Invest.", ok: false });
-      return;
-    }
-    setBusy(id);
-    setMessage(null);
-    try {
-      const res = await fetch(`/api/live/orders/${id}/approve`, {
-        method: "POST",
-        headers: tokenHeaders(),
-      });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        setMessage({ text: body.detail || `Ошибка (HTTP ${res.status})`, ok: false });
-      } else {
-        setMessage({ text: `Заявка отправлена вашему брокеру: ${body.orderId ?? ""}`, ok: true });
-      }
-    } catch {
-      setMessage({ text: "Нет связи с backend.", ok: false });
-    } finally {
-      setBusy("");
-      loadProposals();
-    }
-  }
-  async function killSwitch() {
-    if (!activeToken) {
-      setMessage({ text: "Сначала укажите свой токен T-Invest.", ok: false });
-      return;
-    }
-    if (!confirm("Отменить все ваши ещё не исполненные заявки, отправленные этим приложением?")) return;
-    setBusy("kill");
-    try {
-      const res = await fetch("/api/live/kill", { method: "POST", headers: tokenHeaders() });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        setMessage({ text: body.detail || `Ошибка (HTTP ${res.status})`, ok: false });
-      } else {
-        setMessage({ text: `Отменено ваших заявок: ${body.cancelled ?? 0}.`, ok: true });
-      }
-    } catch {
-      setMessage({ text: "Нет связи с backend.", ok: false });
-    } finally {
-      setBusy("");
-      loadProposals();
-    }
-  }
-  const visibleProposals = (proposals || []).filter((p) => !dismissed.includes(p.id));
   return (
     <dialog ref={dialog} className="live-dialog" onCancel={close}>
       <button
@@ -1065,7 +1157,14 @@ function LiveDialog({
           <button
             className="primary w-full"
             disabled={!ack}
-            onClick={() => setStep(2)}
+            onClick={() => {
+              try {
+                localStorage.setItem(ACK_KEY, "1");
+              } catch {
+                /* Not persisted this time; the checkbox still gates step 2. */
+              }
+              setStep(2);
+            }}
           >
             Продолжить <ArrowRight size={16} />
           </button>
@@ -1137,84 +1236,7 @@ function LiveDialog({
               )}
             </>
           )}
-          <div className="section-heading mt-5">
-            <div>
-              <h3>Предложения на подтверждение</h3>
-              <p>
-                Общие для всех кандидаты от стратегий. Заявка уходит вашему
-                брокеру только когда вы сами нажимаете «Отправить».
-              </p>
-            </div>
-          </div>
-          {!visibleProposals.length ? (
-            <p className="small muted">Предложений пока нет.</p>
-          ) : (
-            <div className="table-scroll">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Тикер</th>
-                    <th>Сторона</th>
-                    <th>Лоты</th>
-                    <th>Цена</th>
-                    <th>Правило</th>
-                    <th>Ваш статус</th>
-                    <th />
-                  </tr>
-                </thead>
-                <tbody>
-                  {visibleProposals.map((p) => (
-                    <tr key={p.id}>
-                      <td><b>{p.ticker}</b></td>
-                      <td>{p.side}</td>
-                      <td>{p.lots}</td>
-                      <td>{p.price}</td>
-                      <td className="small">{p.rule}</td>
-                      <td>
-                        <span className="badge muted-badge">{p.my_status || p.status}</span>
-                        {p.my_error && <div className="small negative">{p.my_error}</div>}
-                      </td>
-                      <td>
-                        {p.status === "PENDING" && !p.my_status && (
-                          <div className="flex gap-2">
-                            <button
-                              className="primary"
-                              disabled={busy === p.id || !activeToken}
-                              onClick={() => approve(p.id)}
-                            >
-                              Отправить
-                            </button>
-                            <button
-                              className="secondary"
-                              disabled={busy === p.id}
-                              onClick={() => dismiss(p.id)}
-                            >
-                              Скрыть
-                            </button>
-                          </div>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-          {message && (
-            <div
-              className={`notice mt-4 ${message.ok ? "success" : "error"}`}
-              role={message.ok ? "status" : "alert"}
-            >
-              {message.text}
-            </div>
-          )}
-          <button
-            className="secondary w-full mt-4"
-            disabled={busy === "kill" || !activeToken}
-            onClick={killSwitch}
-          >
-            <LockKeyhole size={14} /> Отменить мои заявки (kill-switch)
-          </button>
+          <LiveProposalsPanel activeToken={activeToken} />
           <button className="primary w-full mt-3" onClick={close}>
             Вернуться в терминал
           </button>
@@ -1690,7 +1712,10 @@ export default function App() {
               <button
                 className={source === "live" ? "active" : ""}
                 aria-pressed={source === "live"}
-                onClick={() => (liveToken ? setSource("live") : setLive(true))}
+                onClick={() => {
+                  setSource("live");
+                  setLive(true);
+                }}
               >
                 {!liveToken && <LockKeyhole size={11} />} Live
               </button>
@@ -1849,6 +1874,11 @@ export default function App() {
                   <Panel title="Открытые заявки" className="mt-5">
                     <Orders m={m} />
                   </Panel>
+                  {source === "live" && (
+                    <Panel title="Live" className="mt-5">
+                      <LiveProposalsPanel activeToken={liveToken} />
+                    </Panel>
+                  )}
                 </>
               )}
               {page === "strategies" &&
