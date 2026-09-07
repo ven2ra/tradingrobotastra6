@@ -4,7 +4,6 @@ import json
 import os
 import secrets
 from contextlib import asynccontextmanager, suppress
-from datetime import datetime, timezone
 from decimal import Decimal as D, ROUND_HALF_UP
 from pathlib import Path
 from fastapi import FastAPI, Header, HTTPException
@@ -13,7 +12,7 @@ from jsonschema import Draft202012Validator
 import live_orders
 import settings_store
 from broker import MarketDataError
-from engine import BondSpread, Config, Engine, Grid, MeanReversion, RiskPolicy, Stop, Tick, Trend
+from engine import BondSpread, Config, Engine, Grid, MeanReversion, RiskPolicy, Stop, Trend
 from tinvest import Observer
 from live import LiveAccount, read_attempts, record_attempt
 
@@ -97,14 +96,18 @@ def health_score(state, policy):
             'positions_used_pct': pct(pos_used), 'turnover_used_pct': pct(turnover_used)}
 
 async def loop():
-    n = 0
+    # Paper ticks on the same real T-Invest quotes and indicators Live
+    # trades signal off, instead of a synthetic price cycle: P/L and
+    # regime-gated entries reflect the actual market, not a fake demo loop.
+    # A ticker simply doesn't tick this cycle if the observer doesn't yet
+    # have a fresh price/order book/60-candle history for it (matches the
+    # same real-data-or-nothing rule the rest of this app follows).
     while True:
-        regime, price = [('FLAT', '98'), ('UPTREND', '101'), ('SHOCK', '95'), ('LOW_LIQUIDITY', '95')][n % 4]
-        px = D(price)
-        now = datetime.now(timezone.utc)
+        observer = app.state.observer
         for ticker in list(engine.plugins):
-            engine.tick(Tick(ticker, regime, px, px, px + D('.01'), now, lot_size=10))
-        n += 1
+            tick = observer.build_tick(ticker)
+            if tick is not None:
+                engine.tick(tick)
         await asyncio.sleep(2)
 
 @asynccontextmanager

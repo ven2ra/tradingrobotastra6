@@ -91,6 +91,37 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await o.api.client.aclose()
 
+    async def test_priority_signal_refresh_analyzes_only_watched_tickers(self):
+        now = datetime.now(timezone.utc).isoformat()
+        def handler(request):
+            method = request.url.path.rsplit('/', 1)[-1]
+            data = {
+                'GetLastPrices': {'lastPrices': [{'price': {'units': '100', 'nano': 0}, 'time': now}]},
+                'GetOrderBook': {'bids': [{'price': {'units': '99', 'nano': 0}}],
+                                  'asks': [{'price': {'units': '101', 'nano': 0}}], 'orderbookTs': now},
+                'GetTradingStatus': {'tradingStatus': 'SECURITY_TRADING_STATUS_NORMAL_TRADING',
+                                      'limitOrderAvailableFlag': True},
+                'GetCandles': {'candles': []},
+            }
+            return httpx.Response(200, json=data[method])
+        o = Observer('test', ['SBER_TQBR', 'GAZP_TQBR'], httpx.MockTransport(handler))
+        o.api.min_interval = 0
+        o.metadata = {
+            'SBER_TQBR': {'uid': 'sber-uid', 'ticker': 'SBER', 'name': 'Sber', 'lot': 10, 'instrumentType': 'share', 'currency': 'rub'},
+            'GAZP_TQBR': {'uid': 'gazp-uid', 'ticker': 'GAZP', 'name': 'Gazprom', 'lot': 10, 'instrumentType': 'share', 'currency': 'rub'},
+        }
+        o.marks = {k: {} for k in o.metadata}
+        o.set_priority(['SBER'])
+        try:
+            await o.refresh_priority_signals()
+            # Not enough candles for indicators() -> classified UNDEFINED, but
+            # the point here is only SBER (the watched ticker) got analyzed.
+            self.assertEqual(o.marks['SBER_TQBR']['regime'], 'UNDEFINED')
+            self.assertEqual(o.marks['SBER_TQBR']['price'], '100')
+            self.assertEqual(o.marks['GAZP_TQBR'], {})  # untouched: not in priority_ids
+        finally:
+            await o.api.client.aclose()
+
     async def test_priority_refresh_is_a_noop_with_no_watched_tickers(self):
         calls = []
         o = Observer('test', ['SBER_TQBR'], httpx.MockTransport(lambda r: calls.append(r) or httpx.Response(200, json={})))
@@ -114,6 +145,56 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(o.updated)
             self.assertEqual(o.journal[-1]['regime'],'UNDEFINED')
         finally: await o.api.client.aclose()
+
+
+class BuildTickTests(unittest.TestCase):
+    def _observer(self):
+        o = Observer('', instruments=['SBER_TQBR'])
+        o.metadata = {'SBER_TQBR': {'uid': 'sber-uid', 'ticker': 'SBER', 'lot': 10, 'instrumentType': 'share',
+                                     'minPriceIncrement': {'units': '0', 'nano': 10000000}}}
+        now = datetime.now(timezone.utc).isoformat()
+        o.marks = {'SBER_TQBR': {'ticker': 'SBER', 'name': 'Sber', 'kind': 'stock', 'price': '100', 'bid': '99.9',
+                                  'ask': '100.1', 'lot_size': 10, 'regime': 'FLAT', 'time': now, 'book_time': now,
+                                  'stale': False, 'session_open': True, 'reason': ''}}
+        o.candle_cache = {'SBER_TQBR': (datetime.now(timezone.utc), {
+            'mean': D('99'), 'atr': D('1'), 'high_n': D('102'), 'low_n': D('97'), 'adx': D('30'), 'rsi': D('55'),
+            'previous_mean': D('98'), 'previous_close': D('99.5'), 'candle_time': now})}
+        return o
+
+    def test_builds_a_real_tick_from_current_mark_and_indicators(self):
+        tick = self._observer().build_tick('SBER')
+        self.assertIsNotNone(tick)
+        self.assertEqual(tick.ticker, 'SBER')
+        self.assertEqual(tick.regime, 'FLAT')
+        self.assertEqual(tick.price, D('100'))
+        self.assertEqual(tick.lot_size, 10)
+        self.assertEqual(tick.mean, D('99'))
+        self.assertEqual(tick.price_step, D('0.01'))
+
+    def test_returns_none_for_unknown_ticker(self):
+        self.assertIsNone(self._observer().build_tick('GAZP'))
+
+    def test_returns_none_without_candle_history(self):
+        o = self._observer()
+        o.candle_cache = {}
+        self.assertIsNone(o.build_tick('SBER'))
+
+    def test_returns_none_for_stale_quote(self):
+        o = self._observer()
+        old = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+        o.marks['SBER_TQBR']['time'] = old
+        o.marks['SBER_TQBR']['book_time'] = old
+        self.assertIsNone(o.build_tick('SBER'))
+
+    def test_returns_none_for_bonds(self):
+        o = self._observer()
+        o.metadata['SBER_TQBR']['instrumentType'] = 'bond'
+        self.assertIsNone(o.build_tick('SBER'))
+
+    def test_returns_none_without_two_sided_book(self):
+        o = self._observer()
+        o.marks['SBER_TQBR']['bid'] = None
+        self.assertIsNone(o.build_tick('SBER'))
 
 
 class IndicatorTests(unittest.TestCase):

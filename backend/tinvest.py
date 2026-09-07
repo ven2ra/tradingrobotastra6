@@ -159,6 +159,8 @@ class Observer:
         self.priority_ids = set()
         try: self.priority_interval = max(1, float(os.getenv('T_INVEST_PRIORITY_POLL_SECONDS', '2')))
         except ValueError: self.priority_interval = 2
+        try: self.priority_signal_interval = max(3, float(os.getenv('T_INVEST_PRIORITY_SIGNAL_POLL_SECONDS', '8')))
+        except ValueError: self.priority_signal_interval = 8
 
     async def discover(self):
         try:
@@ -207,6 +209,31 @@ class Observer:
             # Per-instrument polling retries; catalog remains visible with no fake prices.
             self.error = 'Каталог загружен; котировки будут получены при повторном опросе'
 
+    def build_tick(self, ticker):
+        """A real engine.Tick for a bare ticker (e.g. 'SBER'), built from
+        this instrument's current quote, order book and cached hourly-candle
+        indicators — the same data instrument() uses before firing a live
+        signal. Returns None rather than a fake tick whenever there isn't
+        enough real, fresh data yet (no candle history, stale quote/book, no
+        two-sided book, or a bond, which paper plugins don't price here):
+        callers should simply skip ticking that instrument this cycle."""
+        ident = next((i for i, m in self.metadata.items() if m.get('ticker') == ticker), None)
+        if ident is None: return None
+        stats = self.candle_cache.get(ident, (None, None))[1]
+        if stats is None: return None
+        mark = self.snapshot()['marks'].get(ident)
+        if not mark or mark.get('stale') or mark.get('price') is None or mark.get('bid') is None or mark.get('ask') is None:
+            return None
+        meta = self.metadata[ident]
+        if meta.get('instrumentType') == 'bond': return None
+        try:
+            return Tick(ticker, mark['regime'], D(mark['price']), D(mark['bid']), D(mark['ask']),
+                        timestamp(mark['time']), lot_size=meta['lot'], mean=stats['mean'], atr=stats['atr'],
+                        high_n=stats['high_n'], low_n=stats['low_n'], adx=stats['adx'], rsi=stats['rsi'],
+                        price_step=quotation(meta['minPriceIncrement']), calendar_complete=False)
+        except (KeyError, ValueError, TypeError, ArithmeticError):
+            return None
+
     def set_priority(self, tickers):
         # Watched tickers (usually a handful) from a browser's Watchlist.
         # Not persisted or per-session — any poll can update it, and the
@@ -252,6 +279,33 @@ class Observer:
             except Exception:
                 pass  # A malformed payload here must not kill the fast loop.
             await asyncio.sleep(self.priority_interval)
+
+    async def refresh_priority_signals(self):
+        """Full analysis (order book, trading status, candles, plugin
+        signals — the same instrument() used by the slow catalog pass) for
+        watched tickers only, so a strategy signal on a favorited instrument
+        doesn't wait for its turn in a 300-instrument scan. Failures are
+        handled exactly like the slow pass: mark UNDEFINED, log HOLD."""
+        if not self.api or not self.priority_ids: return
+        async def guarded(ident):
+            try:
+                await self.instrument(ident)
+            except (MarketDataError, ValueError, KeyError, TypeError, ArithmeticError, IndexError) as exc:
+                reason = str(exc) if isinstance(exc, MarketDataError) else 'Неполные или некорректные рыночные данные'
+                if ident in self.marks:
+                    self.marks[ident] = {**self.marks[ident], 'regime': 'UNDEFINED', 'reason': reason, 'stale': True}
+                self.log(ident, 'UNDEFINED', 'RiskOff', 'HOLD', reason)
+        await asyncio.gather(*(guarded(i) for i in list(self.priority_ids)))
+
+    async def _priority_signal_loop(self):
+        while True:
+            try:
+                await self.refresh_priority_signals()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                pass  # A malformed payload here must not kill the fast loop.
+            await asyncio.sleep(self.priority_signal_interval)
 
     def log(self, ticker, regime, strategy, action, reason, price=None, lots=0):
         self.journal.append(dict(time=datetime.now(timezone.utc).astimezone(MSK).isoformat(), ticker=ticker,
@@ -381,6 +435,7 @@ class Observer:
 
     async def run(self):
         priority_task = asyncio.create_task(self._priority_loop())
+        priority_signal_task = asyncio.create_task(self._priority_signal_loop())
         try:
             while True:
                 try:
@@ -393,7 +448,9 @@ class Observer:
                 await asyncio.sleep(self.interval if self.status != 'error' else max(60,self.interval))
         finally:
             priority_task.cancel()
+            priority_signal_task.cancel()
             with suppress(asyncio.CancelledError): await priority_task
+            with suppress(asyncio.CancelledError): await priority_signal_task
             if self.api: await self.api.client.aclose()
 
 if __name__ == '__main__':
