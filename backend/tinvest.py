@@ -433,8 +433,15 @@ class Observer:
                 signal = signals[0]
                 proposed = live_orders.create_proposal(meta['ticker'], uid, signal.side, signal.lots,
                     price, 'LIMIT', f'{plugin.config.id}: {signal.rule}')
-                note = ('Предложение на подтверждение создано в Live.' if proposed
-                        else 'Заявка не создана: режим наблюдения, портфель и календарь не подключены.')
+                if proposed:
+                    note = 'Предложение на подтверждение создано в Live.'
+                elif not live_orders.is_enabled():
+                    note = 'Заявка не создана: приём предложений выключен администратором.'
+                else:
+                    # create_proposal's only other reason to decline is its own
+                    # dedup gate: an identical ticker+rule proposal is still
+                    # PENDING, so a repeat firing doesn't flood the queue.
+                    note = 'Заявка не создана: тот же сигнал уже ожидает подтверждения в Live.'
                 self.log(meta['ticker'],regime,plugin.config.id,'SIGNAL',
                     f'{reason}; кандидат {signal.side}: {signal.rule}. {note}',price,signal.lots)
             else:
