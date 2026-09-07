@@ -101,7 +101,11 @@ const empty: Monitor = {
   status: "loading",
   error: "",
 };
-export function useMonitor(source: Source, liveToken?: string) {
+export function useMonitor(
+  source: Source,
+  liveToken?: string,
+  priorityTickers?: string[],
+) {
   const [paper, setPaper] = useState<Monitor>(empty);
   useEffect(() => {
     if (source === "demo") return;
@@ -180,9 +184,16 @@ export function useMonitor(source: Source, liveToken?: string) {
       if (source === "live") return pollLive();
       controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 5000);
+      // The watched tickers get a fast, cheap backend refresh (one batched
+      // quote call) independent of the slow full-catalog pass — see
+      // Observer.set_priority in backend/tinvest.py.
+      const snapshotUrl =
+        source === "t-invest" && priorityTickers?.length
+          ? `/api/t-invest/snapshot?priority=${encodeURIComponent(priorityTickers.join(","))}`
+          : `/api/${source}/snapshot`;
       try {
         const replies = await Promise.all([
-          fetch(`/api/${source}/snapshot`, { signal: controller.signal }),
+          fetch(snapshotUrl, { signal: controller.signal }),
           fetch(`/api/${source}/journal`, { signal: controller.signal }),
         ]);
         if (replies.some((r) => !r.ok)) throw new Error("API недоступен");
@@ -320,6 +331,6 @@ export function useMonitor(source: Source, liveToken?: string) {
       clearTimeout(timer);
       controller?.abort();
     };
-  }, [source, liveToken]);
+  }, [source, liveToken, priorityTickers?.join(",")]);
   return source === "demo" ? demo : paper.origin === source ? paper : empty;
 }

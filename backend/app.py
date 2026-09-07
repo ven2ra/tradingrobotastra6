@@ -200,7 +200,11 @@ async def remove_strategy(strategy_id: str):
     return {'removed': strategy_id}
 
 @app.get('/api/t-invest/snapshot')
-async def market_snapshot(): return app.state.observer.snapshot()
+async def market_snapshot(priority: str = ''):
+    tickers = [t for t in priority.split(',') if t.strip()][:50]
+    if tickers:
+        app.state.observer.set_priority(tickers)
+    return app.state.observer.snapshot()
 
 @app.get('/api/t-invest/journal')
 async def market_journal(): return app.state.observer.journal

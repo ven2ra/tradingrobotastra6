@@ -66,6 +66,40 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result['marks']['SBER_TQBR']['stale'])
         self.assertEqual(o.marks['SBER_TQBR']['regime'],'UPTREND')
 
+    async def test_priority_refresh_updates_only_watched_tickers_price_and_time(self):
+        calls = []
+        def handler(request):
+            calls.append(request)
+            body = json.loads(request.content)
+            by_uid = {'sber-uid': 'SBER', 'gazp-uid': 'GAZP'}
+            return httpx.Response(200, json={'lastPrices': [
+                {'instrumentUid': uid, 'price': {'units': '111', 'nano': 0}, 'time': '2026-01-01T00:00:00Z'}
+                for uid in body['instrumentId'] if uid in by_uid]})
+        o = Observer('test', ['SBER_TQBR', 'GAZP_TQBR', 'LKOH_TQBR'], httpx.MockTransport(handler))
+        o.api.min_interval = 0
+        o.metadata = {'SBER_TQBR': {'uid': 'sber-uid'}, 'GAZP_TQBR': {'uid': 'gazp-uid'}, 'LKOH_TQBR': {'uid': 'lkoh-uid'}}
+        o.marks = {k: {'price': '1', 'time': None, 'regime': 'FLAT'} for k in o.metadata}
+        o.set_priority(['sber', 'gazp'])  # case-insensitive
+        self.assertEqual(o.priority_ids, {'SBER_TQBR', 'GAZP_TQBR'})
+        try:
+            await o.refresh_priority_prices()
+            self.assertEqual(len(calls), 1)  # one batched call regardless of watch-list size
+            self.assertEqual(o.marks['SBER_TQBR']['price'], '111')
+            self.assertEqual(o.marks['SBER_TQBR']['time'], '2026-01-01T00:00:00Z')
+            self.assertEqual(o.marks['SBER_TQBR']['regime'], 'FLAT')  # untouched by the fast path
+            self.assertEqual(o.marks['LKOH_TQBR']['price'], '1')  # not watched -> not refreshed
+        finally:
+            await o.api.client.aclose()
+
+    async def test_priority_refresh_is_a_noop_with_no_watched_tickers(self):
+        calls = []
+        o = Observer('test', ['SBER_TQBR'], httpx.MockTransport(lambda r: calls.append(r) or httpx.Response(200, json={})))
+        try:
+            await o.refresh_priority_prices()
+            self.assertEqual(calls, [])
+        finally:
+            await o.api.client.aclose()
+
     async def test_empty_last_prices_is_contained_and_does_not_kill_worker(self):
         now=datetime.now(timezone.utc).isoformat()
         def handler(request):

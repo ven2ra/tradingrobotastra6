@@ -1473,10 +1473,6 @@ export default function App() {
     setLiveToken(token);
   }
   const m = useMonitor(source, source === "live" ? liveToken : undefined);
-  // Real T-Invest quotes power Watchlist/Regimes/Journal/Bonds independently
-  // of whether Paper or Live is selected above — those pages show the same
-  // market analysis regardless of which account/engine is currently active.
-  const marketMonitor = useMonitor("t-invest");
   const [menu, setMenu] = useState(false),
     [live, setLive] = useState(false),
     [info, setInfo] = useState(false),
@@ -1501,6 +1497,12 @@ export default function App() {
       return ["SBER", "GAZP", "LKOH", "YDEX"];
     }
   });
+  // Real T-Invest quotes power Watchlist/Regimes/Journal/Bonds independently
+  // of whether Paper or Live is selected above; the watched tickers (usually
+  // a handful) are fast-refreshed on the backend every couple of seconds,
+  // while the full liquid catalog keeps updating in the background at a
+  // pace the broker's rate limit actually allows for 300 instruments.
+  const marketMonitor = useMonitor("t-invest", undefined, watch);
   const [clock, setClock] = useState(new Date());
   useEffect(() => {
     const id = setInterval(() => setClock(new Date()), 1000);

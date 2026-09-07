@@ -5,6 +5,7 @@ OrdersService boundary and the human-approval gate in front of it).
 """
 import asyncio
 import os
+from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal as D
 from pathlib import Path
@@ -155,6 +156,9 @@ class Observer:
         self.status, self.error, self.updated = ('loading' if token else 'not_configured'), '', None
         try: self.interval = max(15, int(os.getenv('T_INVEST_POLL_SECONDS', '15')))
         except ValueError: self.interval = 15
+        self.priority_ids = set()
+        try: self.priority_interval = max(1, float(os.getenv('T_INVEST_PRIORITY_POLL_SECONDS', '2')))
+        except ValueError: self.priority_interval = 2
 
     async def discover(self):
         try:
@@ -202,6 +206,52 @@ class Observer:
         except (MarketDataError, ValueError, KeyError, TypeError):
             # Per-instrument polling retries; catalog remains visible with no fake prices.
             self.error = 'Каталог загружен; котировки будут получены при повторном опросе'
+
+    def set_priority(self, tickers):
+        # Watched tickers (usually a handful) from a browser's Watchlist.
+        # Not persisted or per-session — any poll can update it, and the
+        # fast loop below always reflects whoever asked most recently.
+        if not tickers or not self.ids: return
+        wanted = {t.strip().upper() for t in tickers if t and t.strip()}
+        self.priority_ids = {ident for ident in self.ids if ident.split('_')[0] in wanted}
+
+    async def refresh_priority_prices(self):
+        """Cheap, frequent freshness for watched tickers: one batched
+        GetLastPrices call regardless of how many are watched, instead of
+        the full instrument() pass (order book + trading status + candles)
+        the slow catalog-wide refresh uses for regime classification. Never
+        touches bid/ask/regime — only price and its timestamp."""
+        ids = [i for i in self.priority_ids if i in self.metadata and i in self.marks]
+        if not self.api or not ids: return
+        try:
+            response = await self.api.call('MarketDataService', 'GetLastPrices',
+                {'instrumentId': [self.metadata[i]['uid'] for i in ids], 'lastPriceType': 'LAST_PRICE_EXCHANGE'})
+            by_uid = {self.metadata[i]['uid']: i for i in ids}
+            received_at = datetime.now(timezone.utc).isoformat()
+            for q in response.get('lastPrices', []):
+                if not isinstance(q, dict): continue
+                ident = by_uid.get(q.get('instrumentUid'))
+                if ident not in self.marks: continue
+                try:
+                    price = quotation(q['price'])
+                    timestamp(q['time'])
+                    if price > 0:
+                        self.marks[ident] = {**self.marks[ident], 'price': str(price), 'time': q['time'],
+                                              'received_at': received_at}
+                except (ValueError, KeyError, TypeError, AttributeError):
+                    continue  # A missing quote must not discard later valid rows.
+        except MarketDataError:
+            pass  # Best-effort; the slower full pass surfaces persistent errors.
+
+    async def _priority_loop(self):
+        while True:
+            try:
+                await self.refresh_priority_prices()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                pass  # A malformed payload here must not kill the fast loop.
+            await asyncio.sleep(self.priority_interval)
 
     def log(self, ticker, regime, strategy, action, reason, price=None, lots=0):
         self.journal.append(dict(time=datetime.now(timezone.utc).astimezone(MSK).isoformat(), ticker=ticker,
@@ -330,6 +380,7 @@ class Observer:
                     equity_rub='0',cash_rub='0',day_pnl_rub='0',day_stopped=False,daily_limit_rub='5000')
 
     async def run(self):
+        priority_task = asyncio.create_task(self._priority_loop())
         try:
             while True:
                 try:
@@ -341,6 +392,8 @@ class Observer:
                     self.status, self.error = 'error', 'Ошибка обработки T-Invest; повторное подключение запланировано'
                 await asyncio.sleep(self.interval if self.status != 'error' else max(60,self.interval))
         finally:
+            priority_task.cancel()
+            with suppress(asyncio.CancelledError): await priority_task
             if self.api: await self.api.client.aclose()
 
 if __name__ == '__main__':
