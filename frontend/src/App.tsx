@@ -403,10 +403,10 @@ function Overview({
           <div className="kpi-footer">
             <span className="positive">
               <ArrowUpRight size={14} />{" "}
-              {source === "demo" ? "+4,23%" : "Paper"}
+              {source === "live" ? "Live" : "Paper"}
             </span>
             <span>
-              {source === "demo" ? "за месяц · пример" : "состояние движка"}
+              {source === "live" ? "реальный счёт" : "состояние движка"}
             </span>
           </div>
           <div className="kpi-decoration" />
@@ -461,18 +461,18 @@ function Overview({
             <span
               className={`status-orb ${m.status === "offline" ? "off" : ""}`}
             />
-            {source === "demo"
-              ? "Демо-сценарий"
-              : m.status === "connected"
-                ? "Paper работает"
-                : m.status === "loading"
-                  ? "Подключение"
-                  : "Нет связи"}
+            {m.status === "connected"
+              ? source === "live"
+                ? "Live подключён"
+                : "Paper работает"
+              : m.status === "loading"
+                ? "Подключение"
+                : "Нет связи"}
           </div>
           <div className="kpi-footer">
             <span>
-              {source === "demo"
-                ? "Без отправки заявок"
+              {source === "live"
+                ? "Ваш реальный брокерский счёт"
                 : "Исполнение на backend"}
             </span>
           </div>
@@ -502,9 +502,7 @@ function Overview({
           <div className="chart-subtitle">
             <span className="legend-dot" /> Equity, RUB{" "}
             <span className="muted">
-              {source === "demo"
-                ? "04 сентября · демонстрация"
-                : "Накопленные наблюдения текущего подключения"}
+              Накопленные наблюдения текущего подключения
             </span>
           </div>
           <div className="equity-chart">
@@ -685,7 +683,7 @@ function Overview({
                   : "Снимок ещё не получен от API или health-score не рассчитан"}
               </p>
               <span className="badge muted-badge">
-                {source === "demo" ? "Пример оценки" : "Расчёт backend"}
+                {source === "live" ? "Нет расчёта для Live" : "Расчёт backend"}
               </span>
             </div>
           </div>
@@ -1462,7 +1460,7 @@ export default function App() {
       ? location.hash.slice(1)
       : "overview",
   );
-  const [source, setSource] = useState<Source>("t-invest");
+  const [source, setSource] = useState<Source>("paper");
   const [liveToken, setLiveToken] = useState(
     () => localStorage.getItem(MY_TOKEN_KEY) || "",
   );
@@ -1475,6 +1473,10 @@ export default function App() {
     setLiveToken(token);
   }
   const m = useMonitor(source, source === "live" ? liveToken : undefined);
+  // Real T-Invest quotes power Watchlist/Regimes/Journal/Bonds independently
+  // of whether Paper or Live is selected above — those pages show the same
+  // market analysis regardless of which account/engine is currently active.
+  const marketMonitor = useMonitor("t-invest");
   const [menu, setMenu] = useState(false),
     [live, setLive] = useState(false),
     [info, setInfo] = useState(false),
@@ -1488,42 +1490,18 @@ export default function App() {
     [showAll, setShowAll] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [assetFilter, setAssetFilter] = useState("all");
-  const [excluded, setExcluded] = useState<string[]>(() => {
-    try {
-      const v = JSON.parse(
-        localStorage.getItem("astra.watchlist.excluded.v1") ?? "[]",
-      );
-      return Array.isArray(v) ? v.filter((x) => typeof x === "string") : [];
-    } catch {
-      return [];
-    }
-  });
   const [watch, setWatch] = useState<string[]>(() => {
     try {
       const x = JSON.parse(
         localStorage.getItem("astra.watchlist.v1") ??
-          '["SBER","LKOH","YDEX","OFZ26238"]',
+          '["SBER","GAZP","LKOH","YDEX"]',
       );
       return Array.isArray(x) ? x.filter((v) => typeof v === "string") : [];
     } catch {
-      return ["SBER", "LKOH"];
+      return ["SBER", "GAZP", "LKOH", "YDEX"];
     }
   });
   const [clock, setClock] = useState(new Date());
-  useEffect(() => {
-    if (source !== "t-invest") return;
-    const additions = m.instruments
-      .map((a) => a.ticker)
-      .filter((t) => !watch.includes(t) && !excluded.includes(t));
-    if (!additions.length) return;
-    const next = [...new Set([...watch, ...additions])];
-    setWatch(next);
-    try {
-      localStorage.setItem("astra.watchlist.v1", JSON.stringify(next));
-    } catch {
-      /* Keep the list usable in memory when browser storage is unavailable. */
-    }
-  }, [source, m.instruments, watch, excluded]);
   useEffect(() => {
     const id = setInterval(() => setClock(new Date()), 1000);
     return () => clearInterval(id);
@@ -1591,33 +1569,25 @@ export default function App() {
     }
   }
   function toggle(t: string) {
-    const removed = watch.includes(t);
     const next = watch.includes(t)
       ? watch.filter((x) => x !== t)
       : [...watch, t];
     setWatch(next);
-    const nextExcluded = removed
-      ? [...new Set([...excluded, t])]
-      : excluded.filter((x) => x !== t);
-    setExcluded(nextExcluded);
     try {
       localStorage.setItem("astra.watchlist.v1", JSON.stringify(next));
-      localStorage.setItem(
-        "astra.watchlist.excluded.v1",
-        JSON.stringify(nextExcluded),
-      );
     } catch {
       setToast("Watchlist изменён только до перезагрузки браузера.");
     }
   }
   const title = pages.find((p) => p.id === page)?.title ?? "Обзор";
-  const market = m.instruments.filter(
+  const market = marketMonitor.instruments.filter(
     (a) =>
       (marketFilter === "ALL" || a.regime === marketFilter) &&
       `${a.ticker} ${a.name}`.toLowerCase().includes(query.toLowerCase()),
   );
-  const unavailable =
-    source !== "demo" && m.updated === null && m.instruments.length === 0;
+  const paperUnavailable = m.updated === null && m.instruments.length === 0;
+  const marketUnavailable =
+    marketMonitor.updated === null && marketMonitor.instruments.length === 0;
   return (
     <div className="app-shell">
       <aside className={`sidebar ${menu ? "open" : ""}`}>
@@ -1667,13 +1637,7 @@ export default function App() {
             <div>
               <b>Рабочий счёт</b>
               <small>
-                {source === "demo"
-                  ? "Демонстрация"
-                  : source === "t-invest"
-                    ? "T-Invest · наблюдение"
-                    : source === "live"
-                      ? "Live · реальный счёт"
-                      : "Paper engine"}
+                {source === "live" ? "Live · реальный счёт" : "Paper engine"}
               </small>
             </div>
             <span className="status-dot" />
@@ -1714,11 +1678,19 @@ export default function App() {
               </span>
             </div>
             <div className="mode-switch">
-              <button className="active" aria-pressed="true">
+              <button
+                className={source === "paper" ? "active" : ""}
+                aria-pressed={source === "paper"}
+                onClick={() => setSource("paper")}
+              >
                 Paper
               </button>
-              <button onClick={() => setLive(true)}>
-                <LockKeyhole size={11} /> Live
+              <button
+                className={source === "live" ? "active" : ""}
+                aria-pressed={source === "live"}
+                onClick={() => (liveToken ? setSource("live") : setLive(true))}
+              >
+                {!liveToken && <LockKeyhole size={11} />} Live
               </button>
             </div>
             <button
@@ -1739,22 +1711,6 @@ export default function App() {
               <p>{pageGuides[page]}</p>
             </div>
             <div className="page-controls">
-              <label className="source-select">
-                <span
-                  className={`status-dot ${source === "demo" ? "demo-dot" : ""}`}
-                />
-                <select
-                  aria-label="Источник данных"
-                  title="Демо-данные — вымышленный портфель без backend. Paper API — виртуальный движок исполнения на backend (localhost:8000). T-Invest — реальные котировки MOEX без торговли. Live — ваш реальный брокерский счёт по вашему токену из диалога Live."
-                  value={source}
-                  onChange={(e) => setSource(e.target.value as Source)}
-                >
-                  <option value="demo">Демо-данные</option>
-                  <option value="paper">Paper API</option>
-                  <option value="t-invest">T-Invest · котировки</option>
-                  <option value="live">Live · мой счёт</option>
-                </select>
-              </label>
               {page === "strategies" ? (
                 <button
                   className="primary"
@@ -1774,28 +1730,22 @@ export default function App() {
           >
             <span>
               <span
-                className={`status-dot ${source === "demo" ? "demo-dot" : m.status === "connected" ? "" : "offline-dot"}`}
+                className={`status-dot ${m.status === "connected" ? "" : "offline-dot"}`}
               />
-              {source === "demo"
-                ? "Демонстрационный портфель · все котировки и результаты — примеры"
-                : source === "t-invest"
-                  ? `T-Invest · ${m.status === "connected" ? "Котировки и анализ · без торговли" : m.status === "loading" ? "Подключаемся…" : "Нет связи"}${m.error ? ` · ${m.error}` : ""}`
-                  : source === "live"
-                    ? `Live · ваш реальный счёт${m.status === "connected" ? "" : m.error ? ` · ${m.error}` : " · нет связи"}`
-                    : m.status === "connected"
-                      ? "Подключено к paper-движку · обновление каждые 2 секунды"
-                      : m.status === "loading"
-                        ? "Подключаемся к paper API…"
-                        : `Нет связи с paper API · ${m.updated ? "показан последний снимок" : "данных нет"}`}
+              {source === "live"
+                ? `Live · ваш реальный счёт${m.status === "connected" ? "" : m.error ? ` · ${m.error}` : " · нет связи"}`
+                : m.status === "connected"
+                  ? "Подключено к paper-движку · обновление каждые 2 секунды"
+                  : m.status === "loading"
+                    ? "Подключаемся к paper API…"
+                    : `Нет связи с paper API · ${m.updated ? "показан последний снимок" : "данных нет"}`}
             </span>
             <span>
-              {source === "demo"
-                ? "Заявки не отправляются"
-                : m.updated
-                  ? `Снимок ${new Date(m.updated).toLocaleTimeString("ru-RU", { timeZone: "Europe/Moscow" })} МСК`
-                  : source === "live"
-                    ? "Введите токен в диалоге Live"
-                    : "Запустите backend на порту 8000"}
+              {m.updated
+                ? `Снимок ${new Date(m.updated).toLocaleTimeString("ru-RU", { timeZone: "Europe/Moscow" })} МСК`
+                : source === "live"
+                  ? "Введите токен в диалоге Live"
+                  : "Запустите backend на порту 8000"}
             </span>
           </div>
           {info && (
@@ -1827,44 +1777,32 @@ export default function App() {
               сокращение риска.
             </div>
           )}
-          {unavailable && !["strategies", "risk"].includes(page) ? (
+          {["overview", "portfolio"].includes(page) && paperUnavailable && (
             <div className="panel">
               <Empty>
                 {m.status === "loading"
-                  ? "Ожидаем первый снимок движка…"
+                  ? "Ожидаем первый снимок…"
                   : m.error ||
                     "API недоступен. Проверьте backend; демонстрационные данные не подставляются."}
               </Empty>
             </div>
-          ) : (
-            <>
-              {page === "overview" && source !== "t-invest" && (
+          )}
+          {["regimes", "journal", "bonds", "watchlist"].includes(page) &&
+            marketUnavailable && (
+              <div className="panel">
+                <Empty>
+                  {marketMonitor.status === "loading"
+                    ? "Ожидаем первые котировки T-Invest…"
+                    : marketMonitor.error ||
+                      "Котировки T-Invest недоступны. Проверьте backend."}
+                </Empty>
+              </div>
+            )}
+          <>
+              {page === "overview" && !paperUnavailable && (
                 <Overview m={m} source={source} go={go} />
               )}
-              {source === "t-invest" && page === "overview" && (
-                <>
-                  <Panel title="Котировки T-Invest · часовые индикаторы">
-                    <MarketTable data={m.instruments} />
-                  </Panel>
-                  <Panel title="Решения по рыночным данным" className="mt-5">
-                    <Journal rows={[...m.journal].reverse()} />
-                  </Panel>
-                  <div className="notice mt-5">
-                    SIGNAL — кандидат по правилу стратегии, не заявка. Портфель
-                    и календарь событий не подключены, реальная торговля
-                    запрещена.
-                  </div>
-                </>
-              )}
-              {source === "t-invest" && page === "portfolio" && (
-                <Panel title="Портфель не подключён">
-                  <Empty>
-                    Это подключение читает только рыночные данные. Брокерские
-                    позиции и баланс не запрашиваются.
-                  </Empty>
-                </Panel>
-              )}
-              {page === "portfolio" && source !== "t-invest" && (
+              {page === "portfolio" && !paperUnavailable && (
                 <>
                   <div className="mini-kpis">
                     <div>
@@ -2017,7 +1955,7 @@ export default function App() {
                     </Panel>
                   </>
                 ))}
-              {page === "regimes" && (
+              {page === "regimes" && !marketUnavailable && (
                 <>
                   <div className="regime-grid">
                     {Object.entries(regimes).map(([r, meta]) => (
@@ -2031,7 +1969,11 @@ export default function App() {
                       >
                         <span style={{ color: meta.color }}>{meta.icon}</span>
                         <b>
-                          {m.instruments.filter((a) => a.regime === r).length}
+                          {
+                            marketMonitor.instruments.filter(
+                              (a) => a.regime === r,
+                            ).length
+                          }
                         </b>
                         <small>{meta.label}</small>
                       </button>
@@ -2066,8 +2008,7 @@ export default function App() {
                         Текущий дневной лимит движка: {money(m.dailyLimit)}.{" "}
                         {m.stopped
                           ? "Новые входы заблокированы."
-                          : "Дневной стоп не сработал."}{" "}
-                        {source === "demo" ? "Демонстрационные значения." : ""}
+                          : "Дневной стоп не сработал."}
                       </p>
                     </div>
                     <span className="badge muted-badge">
@@ -2077,28 +2018,30 @@ export default function App() {
                   <RiskEditor />
                 </>
               )}
-              {page === "journal" && (
+              {page === "journal" && !marketUnavailable && (
                 <Panel
                   title="Журнал решений"
                   action={
-                    <span className="count-badge">{m.journal.length}</span>
+                    <span className="count-badge">
+                      {marketMonitor.journal.length}
+                    </span>
                   }
                 >
                   <Journal
-                    rows={[...m.journal].sort((a, b) =>
+                    rows={[...marketMonitor.journal].sort((a, b) =>
                       b.time.localeCompare(a.time),
                     )}
                   />
                 </Panel>
               )}
-              {page === "bonds" && (
+              {page === "bonds" && !marketUnavailable && (
                 <>
                   <div className="notice mb-5">
                     <BookOpen size={18} /> Цена облигаций — в % номинала. Полная
                     стоимость = цена × номинал / 100 + НКД.
                   </div>
                   <div className="bond-grid">
-                    {m.instruments
+                    {marketMonitor.instruments
                       .filter((a) => a.kind === "bond")
                       .map((a) => (
                         <article className="panel bond-card" key={a.ticker}>
@@ -2162,18 +2105,20 @@ export default function App() {
                         </article>
                       ))}
                   </div>
-                  {!m.instruments.some((a) => a.kind === "bond") && (
+                  {!marketMonitor.instruments.some(
+                    (a) => a.kind === "bond",
+                  ) && (
                     <div className="panel">
                       <Empty>
-                        Paper API пока не передал облигационные инструменты
+                        T-Invest пока не передал облигационные инструменты
                       </Empty>
                     </div>
                   )}
                 </>
               )}
-              {page === "watchlist" && (
+              {page === "watchlist" && !marketUnavailable && (
                 <Panel
-                  title={`Список наблюдения · ${m.instruments.filter((a) => watch.includes(a.ticker)).length} бумаг`}
+                  title={`Список наблюдения · ${marketMonitor.instruments.filter((a) => watch.includes(a.ticker)).length} бумаг`}
                   action={
                     <button
                       className="secondary"
@@ -2220,8 +2165,7 @@ export default function App() {
                   />
                 </Panel>
               )}
-            </>
-          )}
+          </>
           <footer>
             <span>
               <span className="brand-star">✧</span> ASTRA{" "}

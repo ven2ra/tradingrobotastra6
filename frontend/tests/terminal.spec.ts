@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-test("300 liquid instruments are auto-added; asset filter and removals persist", async ({
+test("300 liquid instruments are browsable via 'Добавить инструменты'; filter and manual add/remove persist", async ({
   page,
 }) => {
   const marks = Object.fromEntries(
@@ -37,32 +37,63 @@ test("300 liquid instruments are auto-added; asset filter and removals persist",
     }),
   );
   await page.goto("/#watchlist");
+  // None of the synthetic T0..T299 tickers are among the default favorites
+  // (SBER/GAZP/LKOH/YDEX), so the favorites-only view starts empty.
+  await expect(page.locator("tbody tr")).toHaveCount(0);
+  await page.getByRole("button", { name: "Добавить инструменты" }).click();
   await expect(page.locator("tbody tr")).toHaveCount(300);
   await page.getByLabel("Класс актива").selectOption("bond");
   await expect(page.locator("tbody tr")).toHaveCount(200);
   await page
-    .getByRole("button", { name: "Удалить T100 в Watchlist", exact: true })
+    .getByRole("button", { name: "Добавить T100 в Watchlist", exact: true })
     .click();
-  await expect(page.locator("tbody tr")).toHaveCount(199);
+  await page.getByRole("button", { name: "Только избранное" }).click();
+  await expect(
+    page.getByRole("button", { name: "Удалить T100 в Watchlist" }),
+  ).toBeVisible();
   await page.reload();
-  await expect(page.locator("tbody tr")).toHaveCount(299);
+  await expect(
+    page.getByRole("button", { name: "Удалить T100 в Watchlist" }),
+  ).toBeVisible();
   await page.getByLabel("Поиск инструмента").fill("Instrument 299");
+  await page.getByRole("button", { name: "Добавить инструменты" }).click();
   await expect(page.locator("tbody tr")).toHaveCount(1);
 });
 
 test.beforeEach(async ({ page }) => {
+  const now = new Date().toISOString();
+  const marks = Object.fromEntries(
+    [
+      ["SBER", "Сбербанк"],
+      ["GAZP", "Газпром"],
+      ["LKOH", "Лукойл"],
+      ["YDEX", "Яндекс"],
+    ].map(([ticker, name]) => [
+      ticker,
+      {
+        ticker,
+        name,
+        kind: "stock",
+        price: "100",
+        lot_size: 10,
+        regime: "FLAT",
+        stale: false,
+        time: now,
+      },
+    ]),
+  );
   await page.route("**/api/t-invest/**", (route) =>
     route.fulfill({
       json: route.request().url().endsWith("journal")
         ? []
         : {
             mode: "OBSERVE",
-            status: "not_configured",
-            configured: false,
+            status: "connected",
+            configured: true,
             error: "",
-            updated: null,
+            updated: now,
             positions: {},
-            marks: {},
+            marks,
             orders: [],
             equity_rub: "0",
           },
@@ -74,7 +105,6 @@ test("screens, watchlist and validated strategy draft", async ({ page }) => {
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
   await page.goto("/");
-  await page.getByLabel("Источник данных").selectOption("demo");
   await expect(
     page.getByRole("heading", { name: "Портфель под контролем" }),
   ).toBeVisible();
@@ -100,7 +130,6 @@ test("screens, watchlist and validated strategy draft", async ({ page }) => {
   }
   await page.getByRole("button", { name: "Удалить SBER в Watchlist" }).click();
   await page.reload();
-  await page.getByLabel("Источник данных").selectOption("demo");
   await expect(
     page.getByRole("button", { name: "Удалить SBER в Watchlist" }),
   ).toHaveCount(0);
@@ -160,7 +189,6 @@ test("live acknowledgement, disabled activation, responsive layout", async ({
 }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/");
-  await page.getByLabel("Источник данных").selectOption("demo");
   await page.getByRole("button", { name: "Live", exact: true }).click();
   await expect(page.getByRole("button", { name: "Продолжить" })).toBeDisabled();
   await page.getByLabel("Я понимаю риск потери капитала").check();
@@ -220,7 +248,6 @@ test("paper data, daily stop and disconnect; no order POSTs", async ({
     await route.fulfill({ json: body });
   });
   await page.goto("/");
-  await page.getByLabel("Источник данных").selectOption("paper");
   await expect(page.locator(".data-banner")).toContainText("Подключено");
   await expect(page.locator(".kpi").first()).toContainText("424");
   await expect(page.getByRole("alert")).toContainText("Дневной стоп сработал");
