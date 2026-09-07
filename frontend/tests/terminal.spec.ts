@@ -184,6 +184,21 @@ test("eight valid constructor defaults and rejected invalid TP", async ({
   }
 });
 
+test("Настройки T-Invest reachable via hamburger in the 640-900px icon-rail range", async ({
+  page,
+}) => {
+  // Between 900px (sidebar collapses to an icon-only rail, hiding
+  // sidebar-bottom) and 640px (full off-canvas drawer takes over) there was
+  // no way at all to reach "Настройки T-Invest" — no hamburger shown either.
+  await page.setViewportSize({ width: 800, height: 900 });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Открыть меню" }).click();
+  await page.getByRole("button", { name: "Настройки T-Invest" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Токен T-Invest" }),
+  ).toBeVisible();
+});
+
 test("live acknowledgement, disabled activation, responsive layout", async ({
   page,
 }) => {

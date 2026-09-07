@@ -1667,6 +1667,42 @@ footer .muted {
     width: 72px;
     padding: 26px 8px;
   }
+  /* The icon-only rail above hides sidebar-bottom (see below), so between
+     this breakpoint and the 640px one — which turns the whole sidebar into
+     an off-canvas drawer — there would otherwise be no way to reach
+     "Настройки T-Invest" at all. Enable the same hamburger drawer here. */
+  .mobile-menu {
+    display: inline-flex;
+  }
+  .sidebar-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: #0009;
+    z-index: 29;
+  }
+  .sidebar.open {
+    display: flex;
+    width: 216px;
+    padding: 30px 18px 0;
+  }
+  .sidebar.open .brand > div,
+  .sidebar.open .workspace-label,
+  .sidebar.open .nav-item > span,
+  .sidebar.open .nav-item small,
+  .sidebar.open .sidebar-bottom {
+    display: block;
+  }
+  .sidebar.open .brand {
+    justify-content: flex-start;
+  }
+  .sidebar.open nav {
+    margin-top: 0;
+  }
+  .sidebar.open .nav-item {
+    padding: 13px;
+    justify-content: flex-start;
+  }
   .brand {
     padding: 0;
     justify-content: center;
