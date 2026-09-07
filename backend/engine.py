@@ -200,8 +200,12 @@ class Grid(Plugin):
 class Trend(Plugin):
     def signal(self, t):
         if t.adx < D(str(self.config.params.get('adx_min', 20))): return None
-        if t.regime == 'UPTREND' and t.price > max(t.high_n, t.mean): return 'BUY', 'N-bar breakout + MA + ADX'
-        if t.regime == 'DOWNTREND' and t.price < min(t.low_n, t.mean): return 'SELL', 'N-bar breakdown + MA + ADX'
+        # breakout_margin_pct lets an entry fire within that % of the
+        # breakout level instead of requiring price to have already cleared
+        # it outright; 0 (default) reproduces the original strict breakout.
+        margin = D(str(self.config.params.get('breakout_margin_pct', 0))) / 100
+        if t.regime == 'UPTREND' and t.price > max(t.high_n, t.mean) * (1 - margin): return 'BUY', 'N-bar breakout + MA + ADX'
+        if t.regime == 'DOWNTREND' and t.price < min(t.low_n, t.mean) * (1 + margin): return 'SELL', 'N-bar breakdown + MA + ADX'
         return None
 
 class MeanReversion(Plugin):

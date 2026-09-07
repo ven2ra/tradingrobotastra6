@@ -411,9 +411,22 @@ class Observer:
         tick = Tick(meta['ticker'],regime,price,bid,ask,timestamp(quote['time']),lot_size=meta['lot'],
             mean=stats['mean'],atr=stats['atr'],high_n=stats['high_n'],low_n=stats['low_n'],adx=stats['adx'],rsi=stats['rsi'],
             price_step=quotation(meta['minPriceIncrement']),calendar_complete=False)
-        plugins = [Grid(Config('Grid','Grid',frozenset({'FLAT'}))),
-                   Trend(Config('Trend','Trend',frozenset({'UPTREND','DOWNTREND'}))),
-                   MeanReversion(Config('MeanReversion','MeanReversion',frozenset({'FLAT'}),stop=Stop('level',max(tick.price_step,stats['low_n']-stats['atr']))))]
+        # Entry rules are deliberately loosened relative to the plugin
+        # defaults (which favor few, high-conviction paper trades) so that
+        # Live actually produces proposals to review at a reasonable pace —
+        # this is shared by every visitor's Live proposals, not a per-user
+        # setting: Grid accepts entries closer to the mean and further below
+        # it (step 0.3% instead of 1%, up to 15 levels instead of 5), Trend
+        # fires within 1% of the breakout level instead of requiring it to
+        # already be cleared, and MeanReversion accepts a shallower dip
+        # (1 ATR instead of 2) and a milder RSI oversold reading (40 instead
+        # of 30). Still gated by the same regime/session/liquidity checks
+        # above — this only affects how close a real, already-eligible tick
+        # needs to be to the each rule's own trigger.
+        plugins = [Grid(Config('Grid','Grid',frozenset({'FLAT'}),params={'step':0.3,'levels_down':15})),
+                   Trend(Config('Trend','Trend',frozenset({'UPTREND','DOWNTREND'}),params={'breakout_margin_pct':1})),
+                   MeanReversion(Config('MeanReversion','MeanReversion',frozenset({'FLAT'}),stop=Stop('level',max(tick.price_step,stats['low_n']-stats['atr'])),
+                       params={'deviation':1,'rsi_low':40}))]
         for plugin in plugins:
             signals = plugin.on_tick(tick)
             if signals:

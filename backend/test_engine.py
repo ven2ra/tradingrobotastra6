@@ -87,5 +87,16 @@ class RiskTests(unittest.TestCase):
         e.tick(replace(self.t, bid=D('-1')))
         self.assertEqual(e.state.equity, D('100000'))
         self.assertEqual(e.marks, {})
+    def test_trend_breakout_margin_pct_allows_entry_before_full_breakout(self):
+        c = Config('trend', 'Trend', frozenset({'UPTREND'}))
+        # price sits just below high_n/mean -> no breakout yet under strict (default) rules.
+        t = replace(self.t, regime='UPTREND', price=D('99.5'), high_n=D('102'), mean=D('100'), adx=D('30'))
+        self.assertEqual(Trend(c).on_tick(t), [])
+        loose = Config('trend', 'Trend', frozenset({'UPTREND'}), params={'breakout_margin_pct': 5})
+        self.assertEqual(len(Trend(loose).on_tick(t)), 1)
+    def test_trend_breakout_margin_pct_default_reproduces_strict_breakout(self):
+        c = Config('trend', 'Trend', frozenset({'UPTREND'}))
+        t = replace(self.t, regime='UPTREND', price=D('103'), high_n=D('102'), mean=D('100'), adx=D('30'))
+        self.assertEqual(len(Trend(c).on_tick(t)), 1)
 
 if __name__ == '__main__': unittest.main()
