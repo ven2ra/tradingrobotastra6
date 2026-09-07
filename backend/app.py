@@ -295,6 +295,36 @@ async def live_kill_switch(x_live_token: str | None = Header(None)):
     record_attempt('kill_switch', json.dumps(result, ensure_ascii=False))
     return result
 
+@app.post('/api/live/positions/close')
+async def close_live_position(payload: dict, x_live_token: str | None = Header(None)):
+    # The one place a real order can fire without a fresh per-trade click:
+    # the browser's own stop-loss check calls this automatically when a
+    # user-set loss threshold is crossed, using the same per-request token
+    # as everything else here — see live_orders.close_position for the
+    # exact, narrow scope of that exception.
+    token = _user_token(x_live_token)
+    instrument_uid = str(payload.get('instrument_uid', '')).strip()
+    if not instrument_uid:
+        raise HTTPException(422, 'instrument_uid обязателен')
+    try:
+        lots = int(payload.get('lots', 0))
+    except (TypeError, ValueError):
+        raise HTTPException(422, 'lots должен быть числом') from None
+    try:
+        account_id, _ = await _resolve_account(token)
+    except MarketDataError as exc:
+        raise HTTPException(502, str(exc)) from None
+    if not account_id:
+        raise HTTPException(409, 'Не удалось определить счёт по этому токену')
+    try:
+        result = await live_orders.close_position(account_id, instrument_uid, lots, token)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from None
+    except MarketDataError as exc:
+        raise HTTPException(502, str(exc)) from None
+    record_attempt('stop_loss_close', f'{instrument_uid} x{lots} -> {result.get("orderId", "")}')
+    return result
+
 @app.post('/api/live/reconcile')
 async def live_reconcile(x_live_token: str | None = Header(None)):
     token = _user_token(x_live_token)

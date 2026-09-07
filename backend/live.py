@@ -134,6 +134,11 @@ class LiveAccount:
                 'price': str(quotation(p['currentPrice'])) if p.get('currentPrice') else None,
                 'lots': str(qty),
                 'pnl_rub': str(quotation(p['expectedYield'])) if p.get('expectedYield') else '0',
+                'instrument_uid': uid,
+                # Needed by the browser-side stop-loss check (% below entry);
+                # this endpoint stays read-only regardless — it never closes
+                # anything itself.
+                'average_price': str(quotation(p['averagePositionPrice'])) if p.get('averagePositionPrice') else None,
             })
         return out
 

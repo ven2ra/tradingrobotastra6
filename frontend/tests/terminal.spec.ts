@@ -199,6 +199,42 @@ test("Настройки T-Invest reachable via hamburger in the 640-900px icon-
   ).toBeVisible();
 });
 
+test("stop-loss auto-fires a market close when a position drops past the threshold", async ({
+  page,
+}) => {
+  let closeCalls = 0;
+  let closeBody: Record<string, unknown> = {};
+  await page.route("**/api/live/account", (route) =>
+    route.fulfill({
+      json: {
+        configured: true, error: "", account_name: "Счёт", account_id_masked: "••1",
+        total_amount_rub: "10000", cash_rub: "1000", positions_count: 1,
+        positions: [{ ticker: "SBER", name: "Сбербанк", kind: "stock", price: "90",
+          lots: 10, pnl_rub: "-1000", instrument_uid: "sber-uid", average_price: "100" }],
+      },
+    }),
+  );
+  await page.route("**/api/live/orders", (route) => route.fulfill({ json: [] }));
+  await page.route("**/api/live/enabled", (route) => route.fulfill({ json: { enabled: false } }));
+  await page.route("**/api/live/positions/close", async (route) => {
+    closeCalls++;
+    closeBody = route.request().postDataJSON();
+    await route.fulfill({ json: { orderId: "close-order-1" } });
+  });
+  await page.addInitScript(() => {
+    localStorage.setItem("live_token_v1", "t.valid");
+    localStorage.setItem("live_risk_ack_v1", "1");
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Live", exact: true }).click();
+  await page.getByRole("button", { name: "Вернуться в терминал" }).click();
+  await page.getByRole("navigation").getByRole("button", { name: "Портфель" }).click();
+  await page.getByLabel("Порог, % от цены входа").fill("5");
+  await expect.poll(() => closeCalls, { timeout: 5000 }).toBeGreaterThan(0);
+  expect(closeBody).toMatchObject({ instrument_uid: "sber-uid", lots: 10 });
+  await expect(page.getByText(/Стоп-лосс: SBER закрыт по рынку/)).toBeVisible();
+});
+
 test("Live button reopens the dialog straight to proposals once token+ack are already saved", async ({
   page,
 }) => {

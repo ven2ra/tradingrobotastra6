@@ -151,6 +151,26 @@ class LiveOrdersTests(unittest.IsolatedAsyncioTestCase):
                 transport=httpx.MockTransport(lambda r: httpx.Response(403)))
         self.assertEqual(_send_status(pid, 'acc-1'), 'ERROR')
 
+    async def test_close_position_sends_a_market_sell_for_the_full_quantity(self):
+        captured = {}
+        def handler(request):
+            import json
+            captured.update(json.loads(request.content))
+            return httpx.Response(200, json={'orderId': 'broker-close-1'})
+        result = await live_orders.close_position('acc-1', 'sber-uid', 5, 'tok',
+            transport=httpx.MockTransport(handler))
+        self.assertEqual(result['orderId'], 'broker-close-1')
+        self.assertEqual(captured['instrumentId'], 'sber-uid')
+        self.assertEqual(captured['quantity'], 5)
+        self.assertEqual(captured['direction'], 'ORDER_DIRECTION_SELL')
+        self.assertEqual(captured['accountId'], 'acc-1')
+        self.assertEqual(captured['orderType'], 'ORDER_TYPE_MARKET')
+        self.assertNotIn('price', captured)  # market order: no limit price
+
+    async def test_close_position_refuses_when_there_is_nothing_to_close(self):
+        with self.assertRaises(ValueError):
+            await live_orders.close_position('acc-1', 'sber-uid', 0, 'tok')
+
 
 if __name__ == '__main__':
     unittest.main()

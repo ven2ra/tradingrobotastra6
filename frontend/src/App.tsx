@@ -889,6 +889,7 @@ interface LiveProposal {
 const MY_TOKEN_KEY = "live_token_v1";
 const DISMISSED_KEY = "live_dismissed_v1";
 const ACK_KEY = "live_risk_ack_v1";
+const STOP_LOSS_KEY = "live_stop_loss_pct_v1";
 function loadDismissed(): string[] {
   try {
     return JSON.parse(localStorage.getItem(DISMISSED_KEY) || "[]");
@@ -1525,6 +1526,56 @@ export default function App() {
   // while the full liquid catalog keeps updating in the background at a
   // pace the broker's rate limit actually allows for 300 instruments.
   const marketMonitor = useMonitor("t-invest", undefined, watch);
+  // Real, autonomous stop-loss — the one place this app ever sends an order
+  // without a fresh per-trade click. It only exists because it runs
+  // entirely in this open browser tab, using the token already in memory:
+  // closing the tab stops it completely, and the server never stores the
+  // token, so nothing can fire once you're gone. Deliberately narrow: full
+  // position size, market order, no partial exits or trailing logic.
+  const [stopLossPct, setStopLossPct] = useState(
+    () => localStorage.getItem(STOP_LOSS_KEY) || "",
+  );
+  function commitStopLossPct(value: string) {
+    try {
+      localStorage.setItem(STOP_LOSS_KEY, value);
+    } catch {
+      /* Still applied for this session even if it can't be remembered. */
+    }
+    setStopLossPct(value);
+  }
+  const closingRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const pct = Number(stopLossPct);
+    if (source !== "live" || !liveToken || !pct || pct <= 0) return;
+    for (const p of m.positions) {
+      if (
+        !p.instrumentUid ||
+        !p.averagePrice ||
+        p.lots <= 0 ||
+        closingRef.current.has(p.instrumentUid)
+      )
+        continue;
+      const dropPct = ((p.price - p.averagePrice) / p.averagePrice) * 100;
+      if (dropPct > -pct) continue;
+      closingRef.current.add(p.instrumentUid);
+      fetch("/api/live/positions/close", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Live-Token": liveToken },
+        body: JSON.stringify({ instrument_uid: p.instrumentUid, lots: p.lots }),
+      })
+        .then((res) => res.json().catch(() => ({})))
+        .then((body) => {
+          setToast(
+            body.orderId
+              ? `Стоп-лосс: ${p.ticker} закрыт по рынку (${body.orderId}).`
+              : `Стоп-лосс по ${p.ticker}: ${body.detail || "ошибка отправки"}.`,
+          );
+        })
+        .catch(() => setToast(`Стоп-лосс по ${p.ticker}: нет связи с backend.`))
+        .finally(() => closingRef.current.delete(p.instrumentUid as string));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [source, liveToken, stopLossPct, m.positions]);
   const [clock, setClock] = useState(new Date());
   useEffect(() => {
     const id = setInterval(() => setClock(new Date()), 1000);
@@ -1876,6 +1927,30 @@ export default function App() {
                   </Panel>
                   {source === "live" && (
                     <Panel title="Live" className="mt-5">
+                      <div className="section-heading">
+                        <div>
+                          <h3>Автостоп-лосс</h3>
+                          <p>
+                            Если открытая позиция уходит в минус больше этого
+                            процента от цены входа, отправляется рыночная
+                            заявка на закрытие всего объёма — автоматически,
+                            без клика. Работает только пока эта вкладка
+                            браузера открыта: токен нигде не хранится, при
+                            закрытии вкладки защита останавливается.
+                          </p>
+                        </div>
+                      </div>
+                      <label className="field mb-4">
+                        Порог, % от цены входа
+                        <input
+                          type="number"
+                          min="0.1"
+                          step="0.1"
+                          placeholder="выключен"
+                          value={stopLossPct}
+                          onChange={(e) => commitStopLossPct(e.target.value)}
+                        />
+                      </label>
                       <LiveProposalsPanel activeToken={liveToken} />
                     </Panel>
                   )}

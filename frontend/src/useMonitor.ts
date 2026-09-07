@@ -148,6 +148,8 @@ export function useMonitor(
             lotSize: 1,
             pnl: p.pnl_rub == null ? null : Number(p.pnl_rub),
             strategy: "Ваш брокерский счёт",
+            instrumentUid: p.instrument_uid == null ? undefined : String(p.instrument_uid),
+            averagePrice: p.average_price == null ? undefined : Number(p.average_price),
           }),
         );
         if (active)

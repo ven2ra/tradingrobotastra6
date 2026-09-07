@@ -103,6 +103,8 @@ export interface Asset {
   coupon?: string;
   offer?: string;
   spread?: number;
+  instrumentUid?: string;
+  averagePrice?: number;
 }
 export const assets: Asset[] = [
   {

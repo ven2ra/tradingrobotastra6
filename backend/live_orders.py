@@ -196,9 +196,10 @@ async def approve_proposal(pid, account_id, token, transport=None):
 
 async def kill_switch(account_id, token, transport=None):
     """Best-effort cancels every order this app sent for this account that is
-    still resting at the broker. Existing positions are left alone —
-    flattening them would itself be an unattended trade, which this model
-    deliberately never allows. Only affects the caller's own account."""
+    still resting at the broker. Existing positions are left alone here —
+    flattening them would be an unattended trade, which this function itself
+    never does; see close_position() below for the one, explicit, opt-in
+    exception to that rule. Only affects the caller's own account."""
     con = _conn()
     sent = con.execute("SELECT id, broker_order_id FROM order_sends WHERE account_id=? AND status='SENT' "
                         "AND broker_order_id IS NOT NULL", (account_id,)).fetchall()
@@ -260,3 +261,30 @@ async def reconcile(account_id, token, transport=None):
             con.close()
         checked += 1
     return {'checked': checked}
+
+async def close_position(account_id, instrument_uid, lots, token, transport=None):
+    """The one deliberate exception to 'no unattended trades': a browser-side
+    stop-loss check (see App.tsx) calls this automatically, without a fresh
+    per-trade click, when a position's live loss crosses a threshold the
+    user set themselves. It only runs while that browser tab stays open —
+    the token is never stored server-side, so nothing can fire once the tab
+    is closed. Always a market SELL for the full given quantity: this
+    assumes a long position, since the strategies here don't open shorts.
+    ('OrdersService', 'PostOrder') is the only allowlisted call it makes,
+    same as every other order path in this file."""
+    if lots <= 0:
+        raise ValueError('Нет позиции для закрытия')
+    order_id = str(uuid.uuid4())
+    client = OrdersClient(token, transport)
+    try:
+        body = {
+            'instrumentId': instrument_uid,
+            'quantity': lots,
+            'direction': 'ORDER_DIRECTION_SELL',
+            'accountId': account_id,
+            'orderType': 'ORDER_TYPE_MARKET',
+            'orderId': order_id,
+        }
+        return await client.call('OrdersService', 'PostOrder', body)
+    finally:
+        await client.aclose()
